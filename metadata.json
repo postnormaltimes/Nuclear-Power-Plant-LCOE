@@ -1,0 +1,5 @@
+{
+  "name": "Nuclear LCOE Calculator",
+  "description": "An interactive dashboard to calculate the Levelized Cost of Electricity (LCOE) for a nuclear power plant based on key financial and operational parameters. Adjust sliders for useful life, construction costs, capital costs, and more to see the real-time impact on electricity cost.",
+  "requestFramePermissions": []
+}

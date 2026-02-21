@@ -1,25 +1,20 @@
 <div align="center">
-
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-
-  <h1>Built with AI Studio</h2>
-
-  <p>The fastest path from prompt to production with Gemini.</p>
-
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
 </div>
 
-## Financial Model
+# Run and deploy your AI Studio app
 
-The repository includes `financial_model.py`, a Python module that builds a discounted cash-flow model for a nuclear power plant. Key features:
+This contains everything you need to run your app locally.
 
-- **Year-end discounting** across the entire project horizon of construction years plus useful life.
-- **Interest during construction (IDC)** can be evaluated under a Standard or RAB approach. The Standard model compounds unpaid interest, while the RAB model applies interest only to the portion of overnight construction cost (OCC) spent to date. Accrued IDC still contributes to the LCOE numerator.
-- **Valuation point** can be set at start of construction (SOC) or commercial operation date (COD). Expenses are discounted from SOC, while energy revenues are discounted from SOC or COD depending on the selected option.
+View your app in AI Studio: https://ai.studio/apps/7fea4fa4-aa84-4665-b3cc-7e9c139c1e42
 
-Run the module directly to see an example calculation:
+## Run Locally
 
-```bash
-python financial_model.py
-```
+**Prerequisites:**  Node.js
+
+
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`
