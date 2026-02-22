@@ -263,57 +263,75 @@ export const calculateLcoe = (
   }
 
   // ----------- DOUBLE LIFE MODE (2-stage LCOE) -----------
-  // Half 1: years 1..N1, full capex recovery + opex.
-  // Half 2: years N1+1..N, NO capex recovery, opex only.
-  // Per-driver final = (driver_half1 + driver_half2) / 2
+  // Financially correct two-stage construct:
+  //   LCOE_total = PV(all costs) / PV(all energy)
+  // where both periods are sequential. Capex is only in H1's cost pool,
+  // but is charged against PV(energy) over the FULL useful life.
+  //
+  // Half-LCOEs are subperiod reporting metrics:
+  //   LCOE_H1 = PV(capex + opex_H1) / PV(energy_H1)
+  //   LCOE_H2 = PV(opex_H2) / PV(energy_H2)
+  //
+  // The identity holds:
+  //   LCOE_total = w1 × LCOE_H1 + w2 × LCOE_H2
+  //   where wi = PV(energy_Hi) / PV(total_energy)  (PV-energy weights)
   const N1 = Math.ceil(TL / 2);
-  const N2 = TL - N1;
 
-  // Helper: sum PV costs and energy over a year range [start, end) with optional capex
-  const sumHalf = (startK: number, endK: number, includeCapex: boolean) => {
-    let pvE = 0, pvO = 0, pvF = 0, pvD = 0;
-    for (let k = startK; k < endK; k++) {
-      const d = df[k];
-      const escalation = Math.pow(1 + pi, k + 1);
-      pvE += annualMwh * d;
-      pvO += baseOmCost * escalation * d;
-      pvF += baseFuelCost * escalation * d;
-      pvD += annualDecom * d;
+  // Sum PV components over each half
+  let pvE1 = 0, pvOm1 = 0, pvFuel1 = 0, pvDecom1 = 0;
+  let pvE2 = 0, pvOm2 = 0, pvFuel2 = 0, pvDecom2 = 0;
+
+  for (let k = 0; k < TL; k++) {
+    const d = df[k];
+    const escalation = Math.pow(1 + pi, k + 1);
+    const e = annualMwh * d;
+    const om = baseOmCost * escalation * d;
+    const fl = baseFuelCost * escalation * d;
+    const dc = annualDecom * d;
+
+    if (k < N1) {
+      pvE1 += e; pvOm1 += om; pvFuel1 += fl; pvDecom1 += dc;
+    } else {
+      pvE2 += e; pvOm2 += om; pvFuel2 += fl; pvDecom2 += dc;
     }
-    if (pvE <= 0) return { lcoeOcc: 0, lcoeFin: 0, lcoeFuel: 0, lcoeOm: 0, lcoeDecom: 0, lcoeSurcharge: 0, total: 0 };
+  }
 
-    const lcoeOcc = includeCapex ? pvOcc / pvE : 0;
-    const lcoeFin = includeCapex ? pvFinancing / pvE : 0;
-    const lcoeSurcharge = includeCapex ? surchargedIdcLcoe / pvE : 0;
-    const lcoeFuel = pvF / pvE;
-    const lcoeOm = pvO / pvE;
-    const lcoeDecom = pvD / pvE;
-    const total = lcoeOcc + lcoeFin + lcoeFuel + lcoeOm + lcoeDecom;
-    return { lcoeOcc, lcoeFin, lcoeFuel, lcoeOm, lcoeDecom, lcoeSurcharge, total };
-  };
+  const pvEnergyTotal = pvE1 + pvE2;
+  if (pvEnergyTotal <= 0) return zero;
 
-  const h1 = sumHalf(0, N1, true);
-  const h2 = sumHalf(N1, TL, false);
+  // --- Total LCOE: PV(all costs) / PV(all energy) ---
+  // Capex is a lump-sum PV at COD charged against full-life energy.
+  const pvOmTotal = pvOm1 + pvOm2;
+  const pvFuelTotal = pvFuel1 + pvFuel2;
+  const pvDecomTotal = pvDecom1 + pvDecom2;
+  const totalPvCost = pvOcc + pvFinancing + pvOmTotal + pvFuelTotal + pvDecomTotal;
 
-  // Arithmetic mean of per-driver contributions
-  const occLcoe = (h1.lcoeOcc + h2.lcoeOcc) / 2;
-  const financingLcoe = (h1.lcoeFin + h2.lcoeFin) / 2;
-  const fuelLcoeVal = (h1.lcoeFuel + h2.lcoeFuel) / 2;
-  const omLcoe = (h1.lcoeOm + h2.lcoeOm) / 2;
-  const decommissioningLcoe = (h1.lcoeDecom + h2.lcoeDecom) / 2;
-  const surchargedLcoe = (h1.lcoeSurcharge + h2.lcoeSurcharge) / 2;
-  const totalLcoe = occLcoe + financingLcoe + fuelLcoeVal + omLcoe + decommissioningLcoe;
+  const totalLcoe = totalPvCost / pvEnergyTotal;
+  const occLcoeVal = pvOcc / pvEnergyTotal;
+  const financingLcoeVal = pvFinancing / pvEnergyTotal;
+  const fuelLcoeVal = pvFuelTotal / pvEnergyTotal;
+  const omLcoeVal = pvOmTotal / pvEnergyTotal;
+  const decommissioningVal = pvDecomTotal / pvEnergyTotal;
+  const surchargedLcoeVal = surchargedIdcLcoe / pvEnergyTotal;
+
+  // --- Subperiod reporting LCOEs ---
+  const halfLcoe1 = pvE1 > 0
+    ? (pvOcc + pvFinancing + pvOm1 + pvFuel1 + pvDecom1) / pvE1
+    : 0;
+  const halfLcoe2 = pvE2 > 0
+    ? (pvOm2 + pvFuel2 + pvDecom2) / pvE2   // no capex in H2
+    : 0;
 
   return {
     totalLcoe,
-    occLcoe,
-    financingLcoe,
+    occLcoe: occLcoeVal,
+    financingLcoe: financingLcoeVal,
     fuelLcoe: fuelLcoeVal,
-    omLcoe,
-    decommissioningLcoe,
-    surchargedIdcLcoe: surchargedLcoe,
-    halfLcoe1: h1.total,
-    halfLcoe2: h2.total,
+    omLcoe: omLcoeVal,
+    decommissioningLcoe: decommissioningVal,
+    surchargedIdcLcoe: surchargedLcoeVal,
+    halfLcoe1,
+    halfLcoe2,
   };
 };
 
