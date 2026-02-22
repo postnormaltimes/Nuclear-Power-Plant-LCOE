@@ -265,16 +265,14 @@ export const calculateLcoe = (
   // ----------- DOUBLE LIFE MODE (2-stage LCOE) -----------
   // Financially correct two-stage construct:
   //   LCOE_total = PV(all costs) / PV(all energy)
-  // where both periods are sequential. Capex is only in H1's cost pool,
-  // but is charged against PV(energy) over the FULL useful life.
+  // Computed directly from the aggregated present values over the full
+  // useful life.  Capex recovery is conceptually assigned to the first
+  // half, but the total is NOT derived from subperiod LCOEs — it comes
+  // straight from the standard PV identity.
   //
-  // Half-LCOEs are subperiod reporting metrics:
+  // Half-LCOEs are subperiod reporting metrics only:
   //   LCOE_H1 = PV(capex + opex_H1) / PV(energy_H1)
-  //   LCOE_H2 = PV(opex_H2) / PV(energy_H2)
-  //
-  // The identity holds:
-  //   LCOE_total = w1 × LCOE_H1 + w2 × LCOE_H2
-  //   where wi = PV(energy_Hi) / PV(total_energy)  (PV-energy weights)
+  //   LCOE_H2 = PV(opex_H2) / PV(energy_H2)  (no capex)
   const N1 = Math.ceil(TL / 2);
 
   // Sum PV components over each half
