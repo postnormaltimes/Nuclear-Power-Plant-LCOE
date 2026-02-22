@@ -28,4 +28,8 @@ export interface LcoeResult {
   decommissioningLcoe: number;
   /** Consumer surcharge from RAB interest payments, expressed as $/MWh (optional). */
   surchargedIdcLcoe?: number;
+  /** Half 1 LCOE (double-life mode only): capex fully recovered in first half. */
+  halfLcoe1?: number;
+  /** Half 2 LCOE (double-life mode only): fully depreciated, opex only. */
+  halfLcoe2?: number;
 }

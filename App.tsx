@@ -56,6 +56,8 @@ const App: React.FC = () => {
   const [isRabEnabled, setIsRabEnabled] = useState(false);
   const [t0Timing, setT0Timing] = useState<'soc' | 'cod'>('cod');
   const [waccProfile, setWaccProfile] = useState<'constant' | 'declining'>('constant');
+  const [inflationAccounting, setInflationAccounting] = useState<'lump_sum' | 'dynamic'>('dynamic');
+  const [lifeTreatment, setLifeTreatment] = useState<'single' | 'double'>('single');
 
   const [sensitivityVar, setSensitivityVar] = useState<keyof LcoeInputs>('overnightCost');
   const [sensitivityVar2, setSensitivityVar2] = useState<keyof LcoeInputs>('costOfEquity');
@@ -79,7 +81,7 @@ const App: React.FC = () => {
     setInputs(prev => ({ ...prev, [field]: value }));
   };
 
-  const lcoeResult = useLcoe(inputs, isRabEnabled, t0Timing, waccProfile);
+  const lcoeResult = useLcoe(inputs, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment);
 
   const pieChartData = useMemo(() => [
     { valueKey: 'occLcoe', color: '#0ea5e9', label: 'Overnight Cost' },    // sky-500
@@ -104,7 +106,7 @@ const App: React.FC = () => {
     const tcOffset = t0Timing === 'soc' ? Tc : 0;
 
     const cachedConstruction = isOpexOnly
-      ? buildConstructionPhase(inputs, isRabEnabled)
+      ? buildConstructionPhase(inputs, isRabEnabled, inflationAccounting)
       : null;
     const cachedDf = isOpexOnly
       ? buildDfArray(waccNomBlend, TL, waccProfile, tcOffset)
@@ -119,9 +121,9 @@ const App: React.FC = () => {
 
     for (let i = min; i <= max; i += step) {
       const xVal = parseFloat(i.toFixed(5));
-      const baselineResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, isRabEnabled, t0Timing, waccProfile, precomputed);
-      const minResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, isRabEnabled, t0Timing, waccProfile, precomputed);
-      const maxResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, isRabEnabled, t0Timing, waccProfile, precomputed);
+      const baselineResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
+      const minResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
+      const maxResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
       baselineSeries.push({ x: xVal, y: baselineResult.totalLcoe });
       minSeries.push({ x: xVal, y: minResult.totalLcoe });
       maxSeries.push({ x: xVal, y: maxResult.totalLcoe });
@@ -130,9 +132,9 @@ const App: React.FC = () => {
     // Ensure the max is included if step doesn't land exactly
     if (baselineSeries.length > 0 && baselineSeries[baselineSeries.length - 1].x < max) {
       const xVal = max;
-      const baselineResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, isRabEnabled, t0Timing, waccProfile, precomputed);
-      const minResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, isRabEnabled, t0Timing, waccProfile, precomputed);
-      const maxResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, isRabEnabled, t0Timing, waccProfile, precomputed);
+      const baselineResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
+      const minResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
+      const maxResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
       baselineSeries.push({ x: xVal, y: baselineResult.totalLcoe });
       minSeries.push({ x: xVal, y: minResult.totalLcoe });
       maxSeries.push({ x: xVal, y: maxResult.totalLcoe });
@@ -151,7 +153,7 @@ const App: React.FC = () => {
       yFormatter: (v: number) => formatCurrency(v).replace('$', ''),
       xFormatter: config.chartFormatter,
     };
-  }, [sensitivityVar, sensitivityVar2, sensitivityVar2Range, inputs, isRabEnabled, t0Timing, waccProfile]);
+  }, [sensitivityVar, sensitivityVar2, sensitivityVar2Range, inputs, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment]);
 
 
   return (
@@ -185,6 +187,24 @@ const App: React.FC = () => {
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-slate-200 mb-3">Financing Model</h3>
               <div className="space-y-4 p-4 border border-slate-700 rounded-lg bg-slate-900/50">
+                {/* Inflation Accounting Selector — FIRST in panel */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Inflation Accounting (SOC→COD)</label>
+                  <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
+                    <button
+                      onClick={() => setInflationAccounting('lump_sum')}
+                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${inflationAccounting === 'lump_sum' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
+                    > Lump-Sum Indexation</button>
+                    <button
+                      onClick={() => setInflationAccounting('dynamic')}
+                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${inflationAccounting === 'dynamic' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
+                    > Dynamic Inflation</button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2 px-1">
+                    Lump-sum applies one cumulative factor (1+π)^Tc to translate SOC costs to COD. Dynamic inflates each construction tranche to its own period, matching the JRC methodology.
+                  </p>
+                </div>
+
                 {/* RAB Selector */}
                 <div>
                   <label className="block text-sm font-medium text-slate-300 mb-2">Interest During Construction</label>
@@ -238,6 +258,24 @@ const App: React.FC = () => {
                     When forecast periods are long and uncertainty is high, research suggests a declining WACC to evaluate investements in long-lived assets. In this model, a gradual decline for every third of useful life is applied.
                   </p>
                 </div>
+
+                {/* Asset Life Treatment Selector — LAST in panel */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Asset Life Treatment</label>
+                  <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
+                    <button
+                      onClick={() => setLifeTreatment('single')}
+                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${lifeTreatment === 'single' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
+                    > Single Life (Standard)</button>
+                    <button
+                      onClick={() => setLifeTreatment('double')}
+                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${lifeTreatment === 'double' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
+                    > Double Life (2-Stage)</button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2 px-1">
+                    Double life splits the useful life in two halves. CAPEX is recovered entirely in the first half; the second half operates fully depreciated. Final LCOE = simple average of both half-LCOEs.
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -262,6 +300,13 @@ const App: React.FC = () => {
                       {formatCurrency(lcoeResult.totalLcoe)}
                     </p>
                     <p className="text-slate-400 font-medium">per MWh</p>
+                    {lifeTreatment === 'double' && lcoeResult.halfLcoe1 != null && lcoeResult.halfLcoe2 != null && (
+                      <p className="text-sm text-slate-400 mt-2">
+                        Half 1 LCOE: <span className="font-semibold text-slate-200">{formatCurrency(lcoeResult.halfLcoe1)}</span>
+                        {' | '}
+                        Half 2 LCOE: <span className="font-semibold text-slate-200">{formatCurrency(lcoeResult.halfLcoe2)}</span>
+                      </p>
+                    )}
                   </div>
                   <div className="w-full max-w-sm text-center">
                     <h3 className="font-semibold text-slate-200 mb-2">LCOE Breakdown</h3>
