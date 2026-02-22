@@ -103,8 +103,8 @@ export function buildConstructionPhase(
   const rabFrac = isRabEnabled ? Math.min(Math.max(rabProportion, 0), 100) / 100 : 0;
   const gearing = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
 
-  // Nominal cost of debt (Fisher) – used exclusively for IDC interest calculation
-  const { costOfDebtNom } = calcNominalWacc(inputs);
+  // Blended nominal WACC (Fisher) – used for whole-capital-structure carrying cost
+  const { waccNomBlend } = calcNominalWacc(inputs);
 
   // Phase A: Sine-weighted S-Curve drawdown with real→nominal inflation indexation.
   // Weight_t = sin(π × (t + 0.5) / Tc), normalised so Σ weights = 1.
@@ -120,28 +120,28 @@ export function buildConstructionPhase(
     cNom[t] = realDraw * Math.pow(1 + pi, t);
   }
 
-  // Phase B: Debt accumulation with RAB intercept.
-  //  - Only the DEBT tranche (gearing × cNom[t]) accrues interest each period.
-  //  - Interest = accumulated debt balance × nominal cost of debt.
-  //  - RAB: surcharged portion paid by consumers; capitalised portion added to debt.
-  //  - assetCod = Σ cNom (total nominal draws) + Σ capitalised IDC
-  let D = 0;                     // accumulated debt balance
+  // Phase B: Capital accumulation with RAB intercept.
+  //  - The ENTIRE capital structure (debt + equity) accrues a carrying cost.
+  //  - Carrying Cost = accumulated capital base × blended nominal WACC.
+  //  - RAB: surcharged portion paid by consumers; capitalised portion added to the asset base.
+  //  - assetCod = Σ cNom (total nominal draws) + Σ capitalised carrying cost
+  let K = 0;                     // accumulated capital base
   let totalSurchargedIdc = 0;
   let totalCapitalisedIdc = 0;
 
   for (let t = 0; t < Tc; t++) {
-    const interest = D * costOfDebtNom;
-    const surcharged = interest * rabFrac;          // consumer levy
-    const capitalized = interest * (1 - rabFrac);    // added to project debt
+    const carryingCost = K * waccNomBlend;
+    const surcharged = carryingCost * rabFrac;          // consumer levy
+    const capitalized = carryingCost * (1 - rabFrac);    // added to project capital base
     totalSurchargedIdc += surcharged;
     totalCapitalisedIdc += capitalized;
-    // Debt balance grows by: debt share of this period's draw + capitalised interest
-    D = D + cNom[t] * gearing + capitalized;
+    // Capital base grows by: this period's full draw + capitalised carrying cost
+    K = K + cNom[t] + capitalized;
   }
 
   // Total nominal capital outlay (sum of all inflation-adjusted draws)
   const totalNomCapital = cNom.reduce((acc, v) => acc + v, 0);
-  // Asset at COD = total nominal capital + all IDC that was capitalised into the asset
+  // Asset at COD = total nominal capital + all carrying cost that was capitalised
   const assetCod = totalNomCapital + totalCapitalisedIdc;
 
   return { assetCod, totalSurchargedIdc };
