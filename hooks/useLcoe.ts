@@ -86,7 +86,7 @@ export function buildDfArray(
 }
 
 // ---------------------------------------------------------------------------
-// Construction phase result: PV-at-SOC components + FV-at-COD for turnkey.
+// Construction phase result: PV-at-SOC components + COD book value for turnkey.
 // ---------------------------------------------------------------------------
 export interface ConstructionResult {
   /** PV at SOC of nominal capital draws (overnight cost component). */
@@ -95,8 +95,10 @@ export interface ConstructionResult {
   pvFinancingSOC: number;
   /** pvOccSOC + pvFinancingSOC. */
   pvCapexSOC: number;
-  /** FV at COD of developer outflows compounded at WACC (turnkey pricing). */
+  /** Asset book value at COD = Σ cNom + Σ capitalizedIdc (turnkey recovery). */
   fvCapexCOD: number;
+  /** OCC share at COD = totalNomCapital / fvCapexCOD. For turnkey decomposition. */
+  occRatioCOD: number;
   /** Surcharged IDC passed to ratepayers (RAB). */
   totalSurchargedIdc: number;
 }
@@ -129,6 +131,7 @@ export function buildConstructionPhase(
     pvFinancingSOC: 0,
     pvCapexSOC: overnightCost,
     fvCapexCOD: overnightCost,
+    occRatioCOD: 1,
     totalSurchargedIdc: 0,
   };
 
@@ -149,8 +152,9 @@ export function buildConstructionPhase(
     const capexCod = overnightCost * Math.pow(1 + pi, Tc);
     for (let t = 0; t < Tc; t++) cNom[t] = capexCod * (weights[t] / weightSum);
   } else {
+    // TASK 3: mid-year inflation escalation (t+0.5) consistent with mid-year discounting
     for (let t = 0; t < Tc; t++) {
-      cNom[t] = overnightCost * (weights[t] / weightSum) * Math.pow(1 + pi, t);
+      cNom[t] = overnightCost * (weights[t] / weightSum) * Math.pow(1 + pi, t + 0.5);
     }
   }
 
@@ -202,7 +206,10 @@ export function buildConstructionPhase(
   // No WACC compounding — IDC build-up already embodies financing cost.
   const fvCapexCOD = totalNomCapital + totalCapitalisedIdc;
 
-  return { pvOccSOC, pvFinancingSOC, pvCapexSOC, fvCapexCOD, totalSurchargedIdc };
+  // TASK 1: COD-basis OCC ratio for turnkey decomposition
+  const occRatioCOD = fvCapexCOD > 0 ? totalNomCapital / fvCapexCOD : 1;
+
+  return { pvOccSOC, pvFinancingSOC, pvCapexSOC, fvCapexCOD, occRatioCOD, totalSurchargedIdc };
 }
 
 // ---------------------------------------------------------------------------
@@ -227,11 +234,13 @@ function computeCoreLcoe(
   const zero: LcoeResult = { totalLcoe: 0, occLcoe: 0, financingLcoe: 0, fuelLcoe: 0, omLcoe: 0, decommissioningLcoe: 0, surchargedIdcLcoe: 0 };
   if (annualMwh <= 0 || TL <= 0) return zero;
 
-  // Decommissioning sinking fund targets inflated end-of-life cost
-  const decomFundRate = 0.01;
+  // TASK 2: Decom sinking fund — rate is REAL, Fisher-convert to nominal.
+  // Fund targets nominal end-of-life cost; sinking-fund formula uses nominal rate.
+  const decomFundRateReal = 0.01;
+  const decomFundRateNom = (1 + decomFundRateReal) * (1 + pi) - 1;
   const futureDecomCost = decommissioningCost * Math.pow(1 + pi, TL);
-  const annualDecom = decomFundRate > 0 && TL > 0
-    ? futureDecomCost * (decomFundRate / (Math.pow(1 + decomFundRate, TL) - 1))
+  const annualDecom = decomFundRateNom > 0 && TL > 0
+    ? futureDecomCost * (decomFundRateNom / (Math.pow(1 + decomFundRateNom, TL) - 1))
     : (TL > 0 ? futureDecomCost / TL : 0);
 
   const baseFuelCost = fuelCost * annualMwh;
@@ -304,20 +313,18 @@ function computeCoreLcoe(
 // Turnkey two-model structure.
 //
 // Developer model: builds the plant, sells at COD.
-//   Required COD recovery = FV at COD of all construction outflows
-//   compounded at WACC (fvCapexCOD). IDC is implicit in WACC compounding.
+//   Required COD recovery = asset book value at COD (fvCapexCOD).
+//   fvCapexCOD = Σ cNom + Σ capitalizedIdc (no extra WACC compounding).
 //   Payment in 3 mid-year tranches post-COD.
 //
 // Buyer model: t=0 = COD, pays 3 tranches then operates.
 //   LCOE = PV(sale tranches + opex) / PV(MWh) from buyer's perspective.
-//   OCC/Financing decomposition uses pvOccSOC/pvFinancingSOC ratio.
+//   OCC/Financing decomposition uses COD book ratio (occRatioCOD).
 // ---------------------------------------------------------------------------
 function computeTurnkeyLcoe(
   inputs: LcoeInputs,
   fvCapexCOD: number,
-  pvOccSOC: number,
-  pvFinancingSOC: number,
-  pvCapexSOC: number,
+  occRatioCOD: number,
   waccNom: number,
   declining: boolean,
 ): LcoeResult {
@@ -343,11 +350,12 @@ function computeTurnkeyLcoe(
   const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
   const buyerDf = buildDfArray(keReal, kdNom, gearingFrac, pi, TL, declining, 0);
 
-  // Decom fund
-  const decomFundRate = 0.01;
+  // TASK 2: Decom sinking fund — rate is REAL, Fisher-convert to nominal.
+  const decomFundRateReal = 0.01;
+  const decomFundRateNom = (1 + decomFundRateReal) * (1 + pi) - 1;
   const futureDecomCost = decommissioningCost * Math.pow(1 + pi, TL);
-  const annualDecom = decomFundRate > 0 && TL > 0
-    ? futureDecomCost * (decomFundRate / (Math.pow(1 + decomFundRate, TL) - 1))
+  const annualDecom = decomFundRateNom > 0 && TL > 0
+    ? futureDecomCost * (decomFundRateNom / (Math.pow(1 + decomFundRateNom, TL) - 1))
     : (TL > 0 ? futureDecomCost / TL : 0);
 
   const baseFuelCost = fuelCost * annualMwh;
@@ -369,11 +377,10 @@ function computeTurnkeyLcoe(
 
   if (pvEnergy <= 0) return zero;
 
-  // Decompose sale payments into OCC vs Financing using the PV-at-SOC ratio
-  // from the construction phase (basis-consistent).
-  const occRatio = pvCapexSOC > 0 ? pvOccSOC / pvCapexSOC : 1;
-  const pvOcc = pvSaleTranches * occRatio;
-  const pvFinancing = pvSaleTranches * (1 - occRatio);
+  // TASK 1: Decompose sale payments using COD book ratio (basis-consistent
+  // with fvCapexCOD definition: totalNomCapital / fvCapexCOD).
+  const pvOcc = pvSaleTranches * occRatioCOD;
+  const pvFinancing = pvSaleTranches * (1 - occRatioCOD);
 
   const totalPvCost = pvSaleTranches + pvOm + pvFuel + pvDecom;
   return {
@@ -426,8 +433,7 @@ export const calculateLcoe = (
   // --- Turnkey mode ---
   if (turnkey) {
     return computeTurnkeyLcoe(
-      inputs, constr.fvCapexCOD,
-      constr.pvOccSOC, constr.pvFinancingSOC, constr.pvCapexSOC,
+      inputs, constr.fvCapexCOD, constr.occRatioCOD,
       waccNomBlend, declining,
     );
   }
