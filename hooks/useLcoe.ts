@@ -299,10 +299,11 @@ function computeTurnkeyLcoe(
 
   // Developer sale price: NPV=0 means developer recoups assetCod.
   // Sale tranches in years 1–3 post-COD. Developer discounts at waccNom.
-  // P_annual × Σ(1/(1+w)^t, t=1..3) = assetCod  →  P_annual = assetCod / annuityFactor
+  // Use mid-year convention (t-0.5) to match the buyer's DF array.
+  // P_annual × Σ(1/(1+w)^(t-0.5), t=1..3) = assetCod
   const nTranches = Math.min(3, TL);
   let annuityFactor = 0;
-  for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNom, t);
+  for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNom, t - 0.5);
   const annualPayment = annuityFactor > 0 ? assetCod / annuityFactor : assetCod;
   const developerSalePrice = annualPayment * nTranches;
 
