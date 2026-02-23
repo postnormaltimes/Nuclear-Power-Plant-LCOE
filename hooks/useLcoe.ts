@@ -359,9 +359,8 @@ export const calculateLcoe = (
   const twoLives = step === 3 && adv.twoLives;
   const turnkey = step === 3 && adv.turnkey;
 
-  // Valuation point: Step 1 forces SOC (lump-sum assumes SOC→COD mapping)
-  const valPoint = step === 1 ? 'soc' : adv.valuationPoint;
-  const tcOffset = valPoint === 'soc' ? Tc : 0;
+  // Valuation point: always SOC (Turnkey buyer uses COD internally via its own DF array)
+  const tcOffset = Tc;
 
   // --- Construction phase ---
   const { assetCod, totalSurchargedIdc } = precomputed ?? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac);

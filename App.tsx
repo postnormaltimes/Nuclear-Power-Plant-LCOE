@@ -94,7 +94,7 @@ const App: React.FC = () => {
     decliningWacc: false,
     turnkey: false,
     twoLives: false,
-    valuationPoint: 'cod',
+    valuationPoint: 'soc',
   });
 
   const [sensitivityVar, setSensitivityVar] = useState<keyof LcoeInputs>('overnightCost');
