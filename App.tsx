@@ -143,21 +143,21 @@ const App: React.FC = () => {
     const { min, max, step: s } = config;
 
     const isOpexOnly = OPEX_ONLY_VARS.has(sensitivityVar);
-    const { waccNomBlend } = calcNominalWacc(inputs);
+    const { costOfEquityNom, costOfDebtNom } = calcNominalWacc(inputs);
+    const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
     const Tc = Math.max(Math.round(inputs.constructionTime), 0);
     const TL = Math.max(Math.round(inputs.usefulLife), 0);
     const inflationMode = step === 1 ? 'lump_sum' : 'dynamic';
     const idcMode = step === 1 ? 'whole_wacc' : 'debt_only';
-    const rabFrac = (step === 3 && adv.rabEnabled) ? Math.min(Math.max(inputs.rabProportion, 0), 100) / 100 : 0;
+    const rabFrac = (step === 3 && adv.rabEnabled) ? 1.0 : 0;
     const declining = step === 3 && adv.decliningWacc;
-    const valPoint = step === 1 ? 'soc' : adv.valuationPoint;
-    const tcOffset = valPoint === 'soc' ? Tc : 0;
+    const tcOffset = Tc;
 
     const cachedConstruction = isOpexOnly
       ? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac)
       : null;
     const cachedDf = isOpexOnly
-      ? buildDfArray(waccNomBlend, TL, declining, tcOffset)
+      ? buildDfArray(costOfEquityNom, costOfDebtNom, gearingFrac, TL, declining, tcOffset)
       : null;
     const precomputed = (cachedConstruction && cachedDf)
       ? { ...cachedConstruction, df: cachedDf }
@@ -216,8 +216,8 @@ const App: React.FC = () => {
           <div className="lg:col-span-2 bg-slate-800 p-6 rounded-2xl shadow-lg border border-slate-700 space-y-6">
             <h2 className="text-2xl font-semibold border-b border-slate-700 pb-4 text-slate-200">Input Parameters</h2>
             {Object.entries(PARAM_CONFIGS).map(([key, config]) => {
-              // RAB Consumer Burden slider only visible when RAB model is active in Step 3
-              if (key === 'rabProportion' && !(step === 3 && adv.rabEnabled)) return null;
+              // RAB Consumer Burden slider no longer needed (RAB covers 100% IDC)
+              if (key === 'rabProportion') return null;
               return (
                 <SliderInput key={key}
                   label={config.label}
@@ -262,12 +262,12 @@ const App: React.FC = () => {
                   <Toggle label="Interest During Construction"
                     options={[{ key: 'off', label: 'Standard (Capitalized)' }, { key: 'on', label: 'RAB Model' }]}
                     value={adv.rabEnabled ? 'on' : 'off'} onChange={advToggle('rabEnabled')}
-                    desc="RAB: consumers cover part of construction financing costs, reducing capitalized IDC."
+                    desc="RAB: consumers cover all construction financing costs (IDC), eliminating capitalized interest."
                   />
-                  <Toggle label="WACC Profile"
+                  <Toggle label="Cost of Equity Profile"
                     options={[{ key: 'off', label: 'Constant' }, { key: 'on', label: 'Declining' }]}
                     value={adv.decliningWacc ? 'on' : 'off'} onChange={advToggle('decliningWacc')}
-                    desc="Declining WACC applies a 3-tranche schedule, reducing the discount rate for later operational years."
+                    desc="Cost of equity declines over 3 tranches (−1.5pp, −3.0pp). Cost of debt stays fixed. WACC decreases."
                   />
                   <Toggle label="Financing Structure"
                     options={[{ key: 'off', label: 'Developer & Operator' }, { key: 'on', label: 'Turnkey' }]}

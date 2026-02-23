@@ -31,14 +31,20 @@ export function calcNominalWacc(inputs: LcoeInputs): {
 }
 
 // ---------------------------------------------------------------------------
-// Phase D: discount factor array with optional declining-tranche schedule.
+// Phase D: discount factor array.
 //
-// Mid-year convention (IEA/NEA standard):
-//   DF is computed BEFORE advancing cumProduct so Year 1 discounts at
-//   (1+w)^0.5, not (1+w)^1.5.
+// When declining=true, the COST OF EQUITY declines over 3 tranches while
+// cost of debt stays fixed. The blended WACC is recomputed per-year.
+//   Tranche 1: Ke_nom (base)
+//   Tranche 2: Ke_nom − 1.5pp
+//   Tranche 3: Ke_nom − 3.0pp
+//
+// Mid-year convention (IEA/NEA): DF computed BEFORE advancing cumProduct.
 // ---------------------------------------------------------------------------
 export function buildDfArray(
-  waccFrac: number,
+  costOfEquityNom: number,
+  costOfDebtNom: number,
+  gearing: number,
   usefulLife: number,
   declining: boolean,
   tcOffset: number,
@@ -48,15 +54,20 @@ export function buildDfArray(
   const L = Math.floor(TL / 3);
 
   const getOpW = (opYear: number): number => {
-    if (!declining) return waccFrac;
-    if (opYear <= L) return waccFrac;
-    if (opYear <= 2 * L) return Math.max(0, waccFrac - 0.015);
-    return Math.max(0, waccFrac - 0.030);
+    // Declining cost of equity, fixed cost of debt
+    let ke = costOfEquityNom;
+    if (declining) {
+      if (opYear > 2 * L) ke = Math.max(0, costOfEquityNom - 0.030);
+      else if (opYear > L) ke = Math.max(0, costOfEquityNom - 0.015);
+    }
+    return gearing * costOfDebtNom + (1 - gearing) * ke;
   };
 
+  // SOC offset: compound through construction years at base WACC
+  const baseWacc = gearing * costOfDebtNom + (1 - gearing) * costOfEquityNom;
   let cumProduct = 1.0;
   for (let t = 1; t <= tcOffset; t++) {
-    cumProduct *= 1 + waccFrac;
+    cumProduct *= 1 + baseWacc;
   }
 
   for (let k = 0; k < TL; k++) {
@@ -289,7 +300,9 @@ function computeTurnkeyLcoe(
   const developerSalePrice = annualPayment * nTranches;
 
   // Buyer model: t=0 = COD, no construction-period discounting
-  const buyerDf = buildDfArray(waccNom, TL, declining, 0);
+  const { costOfEquityNom: keNom, costOfDebtNom: kdNom } = calcNominalWacc(inputs);
+  const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
+  const buyerDf = buildDfArray(keNom, kdNom, gearingFrac, TL, declining, 0);
 
   // Decom fund
   const decomFundRate = 0.01;
@@ -352,9 +365,7 @@ export const calculateLcoe = (
   // --- Step-dependent modes ---
   const inflationMode: 'lump_sum' | 'dynamic' = step === 1 ? 'lump_sum' : 'dynamic';
   const idcMode: 'whole_wacc' | 'debt_only' = step === 1 ? 'whole_wacc' : 'debt_only';
-  const rabFrac = (step === 3 && adv.rabEnabled)
-    ? Math.min(Math.max(inputs.rabProportion, 0), 100) / 100
-    : 0;
+  const rabFrac = (step === 3 && adv.rabEnabled) ? 1.0 : 0;
   const declining = step === 3 && adv.decliningWacc;
   const twoLives = step === 3 && adv.twoLives;
   const turnkey = step === 3 && adv.turnkey;
@@ -366,7 +377,9 @@ export const calculateLcoe = (
   const { assetCod, totalSurchargedIdc } = precomputed ?? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac);
 
   // --- Discount factors ---
-  const df = precomputed?.df ?? buildDfArray(waccNomBlend, TL, declining, tcOffset);
+  const { costOfEquityNom, costOfDebtNom } = calcNominalWacc(inputs);
+  const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
+  const df = precomputed?.df ?? buildDfArray(costOfEquityNom, costOfDebtNom, gearingFrac, TL, declining, tcOffset);
 
   // --- Turnkey mode ---
   if (turnkey) {
