@@ -30,19 +30,19 @@ function approxEq(a: number, b: number, tol = 1e-6) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: fvCapexCOD ordering (no double-count)
+// Test 1: bvCapexCOD ordering (no double-count)
 // ---------------------------------------------------------------------------
-console.log('\nTest 1: fvCapexCOD ordering — pvCapexSOC < fvCapexCOD < WACC-compounded FV');
+console.log('\nTest 1: bvCapexCOD ordering — pvCapexSOC < bvCapexCOD < WACC-compounded FV');
 {
     const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
     const { waccNomBlend } = calcNominalWacc(DEFAULTS);
     const Tc = DEFAULTS.constructionTime;
     const waccFV = constr.pvOccSOC * Math.pow(1 + waccNomBlend, Tc);
 
-    assert(constr.fvCapexCOD > constr.pvCapexSOC,
-        `fvCapexCOD (${constr.fvCapexCOD.toFixed(2)}) > pvCapexSOC (${constr.pvCapexSOC.toFixed(2)})`);
-    assert(constr.fvCapexCOD < waccFV,
-        `fvCapexCOD (${constr.fvCapexCOD.toFixed(2)}) < WACC-FV (${waccFV.toFixed(2)})`);
+    assert(constr.bvCapexCOD > constr.pvCapexSOC,
+        `bvCapexCOD (${constr.bvCapexCOD.toFixed(2)}) > pvCapexSOC (${constr.pvCapexSOC.toFixed(2)})`);
+    assert(constr.bvCapexCOD < waccFV,
+        `bvCapexCOD (${constr.bvCapexCOD.toFixed(2)}) < WACC-FV (${waccFV.toFixed(2)})`);
 }
 
 // ---------------------------------------------------------------------------
@@ -57,9 +57,9 @@ console.log('\nTest 2: pvOccSOC + pvFinancingSOC = pvCapexSOC');
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Turnkey PV(payments) = fvCapexCOD at developer WACC
+// Test 3: Turnkey PV(payments) = bvCapexCOD at developer WACC
 // ---------------------------------------------------------------------------
-console.log('\nTest 3: Turnkey PV(payments) = fvCapexCOD');
+console.log('\nTest 3: Turnkey PV(payments) = bvCapexCOD');
 {
     const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
     const { waccNomBlend } = calcNominalWacc(DEFAULTS);
@@ -67,13 +67,13 @@ console.log('\nTest 3: Turnkey PV(payments) = fvCapexCOD');
 
     let annuityFactor = 0;
     for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNomBlend, t - 0.5);
-    const annualPayment = constr.fvCapexCOD / annuityFactor;
+    const annualPayment = constr.bvCapexCOD / annuityFactor;
 
     let pvPayments = 0;
     for (let t = 1; t <= nTranches; t++) pvPayments += annualPayment / Math.pow(1 + waccNomBlend, t - 0.5);
 
-    assert(approxEq(pvPayments, constr.fvCapexCOD, 1e-4),
-        `PV(payments) = ${pvPayments.toFixed(2)} ≈ fvCapexCOD = ${constr.fvCapexCOD.toFixed(2)}`);
+    assert(approxEq(pvPayments, constr.bvCapexCOD, 1e-4),
+        `PV(payments) = ${pvPayments.toFixed(2)} ≈ bvCapexCOD = ${constr.bvCapexCOD.toFixed(2)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +106,20 @@ console.log('\nTest 5: Decom sinking fund nominal rate reduces to real rate when
     // With inflation=0, nominal rate = real rate, so decom should be lower (smaller fund target)
     assert(r2.decommissioningLcoe < r1.decommissioningLcoe,
         `Decom with π=0 (${r2.decommissioningLcoe.toFixed(4)}) < with π=2% (${r1.decommissioningLcoe.toFixed(4)})`);
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Declining Ke edge case — TL < 3 means L=0, no decline applied
+// ---------------------------------------------------------------------------
+console.log('\nTest 6: Declining Ke with TL=2 — no drop (L=0 guard)');
+{
+    const shortLife = { ...DEFAULTS, usefulLife: 2 };
+    const adv: AdvancedToggles = { rabEnabled: false, decliningWacc: true, turnkey: false, twoLives: false, valuationPoint: 'soc' };
+    const advOff: AdvancedToggles = { ...adv, decliningWacc: false };
+    const r1 = calculateLcoe(shortLife, 3, adv);   // declining ON
+    const r2 = calculateLcoe(shortLife, 3, advOff); // declining OFF
+    assert(approxEq(r1.totalLcoe, r2.totalLcoe, 1e-6),
+        `TL=2 declining ON (${r1.totalLcoe.toFixed(2)}) = OFF (${r2.totalLcoe.toFixed(2)}) — L=0 guard`);
 }
 
 console.log('\n✅ All sanity tests passed.\n');
