@@ -33,18 +33,21 @@ export function calcNominalWacc(inputs: LcoeInputs): {
 // ---------------------------------------------------------------------------
 // Phase D: discount factor array.
 //
-// When declining=true, the COST OF EQUITY declines over 3 tranches while
-// cost of debt stays fixed. The blended WACC is recomputed per-year.
-//   Tranche 1: Ke_nom (base)
-//   Tranche 2: Ke_nom − 1.5pp
-//   Tranche 3: Ke_nom − 3.0pp
+// When declining=true, the COST OF EQUITY declines over 3 tranches.
+// The decline is applied to the REAL rate before Fisher conversion,
+// preventing distortions at high inflation:
+//   Tranche 1: Ke_real (base)
+//   Tranche 2: Ke_real × 2/3
+//   Tranche 3: Ke_real / 3
+// Cost of debt stays fixed (nominal).
 //
 // Mid-year convention (IEA/NEA): DF computed BEFORE advancing cumProduct.
 // ---------------------------------------------------------------------------
 export function buildDfArray(
-  costOfEquityNom: number,
+  costOfEquityReal: number,
   costOfDebtNom: number,
   gearing: number,
+  pi: number,
   usefulLife: number,
   declining: boolean,
   tcOffset: number,
@@ -53,19 +56,22 @@ export function buildDfArray(
   const TL = usefulLife;
   const L = Math.floor(TL / 3);
 
+  // Base nominal Ke (for construction offset and tranche 1)
+  const baseKeNom = (1 + costOfEquityReal) * (1 + pi) - 1;
+
   const getOpW = (opYear: number): number => {
-    // Declining cost of equity (proportional): C1=base, C2=C1×2/3, C3=C1/3
-    // Cost of debt stays fixed. Blended WACC recomputed per-year.
-    let ke = costOfEquityNom;
+    // Declining REAL cost of equity, then Fisher to nominal
+    let keReal = costOfEquityReal;
     if (declining) {
-      if (opYear > 2 * L) ke = costOfEquityNom / 3;
-      else if (opYear > L) ke = costOfEquityNom * 2 / 3;
+      if (opYear > 2 * L) keReal = costOfEquityReal / 3;
+      else if (opYear > L) keReal = costOfEquityReal * 2 / 3;
     }
-    return gearing * costOfDebtNom + (1 - gearing) * ke;
+    const keNom = (1 + keReal) * (1 + pi) - 1;
+    return gearing * costOfDebtNom + (1 - gearing) * keNom;
   };
 
   // SOC offset: compound through construction years at base WACC
-  const baseWacc = gearing * costOfDebtNom + (1 - gearing) * costOfEquityNom;
+  const baseWacc = gearing * costOfDebtNom + (1 - gearing) * baseKeNom;
   let cumProduct = 1.0;
   for (let t = 1; t <= tcOffset; t++) {
     cumProduct *= 1 + baseWacc;
@@ -220,49 +226,49 @@ function computeCoreLcoe(
     };
   }
 
-  // ---------- 2-LIVES (arithmetic mean per spec) ----------
+  // ---------- 2-LIVES (PV-correct aggregation) ----------
   // Half 1: years 0..N1-1, full capex + opex
   // Half 2: years N1..TL-1, NO capex, opex only
-  // Final LCOE = (LCOE_H1 + LCOE_H2) / 2  (simple average, NOT energy-weighted)
+  // Total LCOE = PV(all costs) / PV(all energy)  (NOT arithmetic mean of ratios)
+  // Half-LCOEs are still reported as PV(half costs) / PV(half energy) for each subperiod.
   const N1 = Math.ceil(TL / 2);
 
-  const sumHalf = (start: number, end: number, includeCapex: boolean) => {
-    let pvE = 0, pvO = 0, pvF = 0, pvD = 0;
-    for (let k = start; k < end; k++) {
-      const d = df[k];
-      const esc = Math.pow(1 + pi, k + 0.5);
-      pvE += annualMwh * d;
-      pvO += baseOmCost * esc * d;
-      pvF += baseFuelCost * esc * d;
-      pvD += annualDecom * d;
-    }
-    if (pvE <= 0) return { occ: 0, fin: 0, fuel: 0, om: 0, decom: 0, surch: 0, total: 0 };
-    return {
-      occ: includeCapex ? pvOcc / pvE : 0,
-      fin: includeCapex ? pvFinancing / pvE : 0,
-      fuel: pvF / pvE,
-      om: pvO / pvE,
-      decom: pvD / pvE,
-      surch: includeCapex && totalSurchargedIdc > 0 ? totalSurchargedIdc / pvE : 0,
-      total: (includeCapex ? (pvOcc + pvFinancing) / pvE : 0) + pvF / pvE + pvO / pvE + pvD / pvE,
-    };
-  };
+  let pvE1 = 0, pvO1 = 0, pvF1 = 0, pvD1 = 0;
+  let pvE2 = 0, pvO2 = 0, pvF2 = 0, pvD2 = 0;
 
-  const h1 = sumHalf(0, N1, true);
-  const h2 = sumHalf(N1, TL, false);
+  for (let k = 0; k < TL; k++) {
+    const d = df[k];
+    const esc = Math.pow(1 + pi, k + 0.5);
+    const e = annualMwh * d;
+    const o = baseOmCost * esc * d;
+    const f = baseFuelCost * esc * d;
+    const dc = annualDecom * d;
+    if (k < N1) { pvE1 += e; pvO1 += o; pvF1 += f; pvD1 += dc; }
+    else { pvE2 += e; pvO2 += o; pvF2 += f; pvD2 += dc; }
+  }
 
-  // Arithmetic mean of per-driver contributions
-  const avg = (a: number, b: number) => (a + b) / 2;
+  const pvEnergyTotal = pvE1 + pvE2;
+  if (pvEnergyTotal <= 0) return zero;
+
+  // Total LCOE from aggregate PVs (capex assigned entirely to full life)
+  const pvOpexTotal = (pvO1 + pvO2) + (pvF1 + pvF2) + (pvD1 + pvD2);
+  const totalLcoe = (pvOcc + pvFinancing + pvOpexTotal) / pvEnergyTotal;
+
+  // Half-LCOEs for reporting: capex only in half 1
+  const halfLcoe1 = pvE1 > 0 ? (pvOcc + pvFinancing + pvO1 + pvF1 + pvD1) / pvE1 : 0;
+  const halfLcoe2 = pvE2 > 0 ? (pvO2 + pvF2 + pvD2) / pvE2 : 0;
+
+  // Driver breakdown: allocate capex to full-life PV(energy), opex from full life
   return {
-    totalLcoe: avg(h1.total, h2.total),
-    occLcoe: avg(h1.occ, h2.occ),
-    financingLcoe: avg(h1.fin, h2.fin),
-    fuelLcoe: avg(h1.fuel, h2.fuel),
-    omLcoe: avg(h1.om, h2.om),
-    decommissioningLcoe: avg(h1.decom, h2.decom),
-    surchargedIdcLcoe: avg(h1.surch, h2.surch),
-    halfLcoe1: h1.total,
-    halfLcoe2: h2.total,
+    totalLcoe,
+    occLcoe: pvOcc / pvEnergyTotal,
+    financingLcoe: pvFinancing / pvEnergyTotal,
+    fuelLcoe: (pvF1 + pvF2) / pvEnergyTotal,
+    omLcoe: (pvO1 + pvO2) / pvEnergyTotal,
+    decommissioningLcoe: (pvD1 + pvD2) / pvEnergyTotal,
+    surchargedIdcLcoe: totalSurchargedIdc > 0 ? totalSurchargedIdc / pvEnergyTotal : 0,
+    halfLcoe1,
+    halfLcoe2,
   };
 }
 
@@ -301,9 +307,10 @@ function computeTurnkeyLcoe(
   const developerSalePrice = annualPayment * nTranches;
 
   // Buyer model: t=0 = COD, no construction-period discounting
-  const { costOfEquityNom: keNom, costOfDebtNom: kdNom } = calcNominalWacc(inputs);
+  const { costOfDebtNom: kdNom } = calcNominalWacc(inputs);
+  const keReal = inputs.costOfEquity / 100;
   const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
-  const buyerDf = buildDfArray(keNom, kdNom, gearingFrac, TL, declining, 0);
+  const buyerDf = buildDfArray(keReal, kdNom, gearingFrac, pi, TL, declining, 0);
 
   // Decom fund
   const decomFundRate = 0.01;
@@ -386,9 +393,11 @@ export const calculateLcoe = (
   const { assetCod, totalSurchargedIdc } = precomputed ?? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac);
 
   // --- Discount factors ---
-  const { costOfEquityNom, costOfDebtNom } = calcNominalWacc(inputs);
+  const { costOfDebtNom } = calcNominalWacc(inputs);
+  const costOfEquityReal = inputs.costOfEquity / 100;
   const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
-  const df = precomputed?.df ?? buildDfArray(costOfEquityNom, costOfDebtNom, gearingFrac, TL, declining, tcOffset);
+  const piRate = inputs.inflationRate / 100;
+  const df = precomputed?.df ?? buildDfArray(costOfEquityReal, costOfDebtNom, gearingFrac, piRate, TL, declining, tcOffset);
 
   // --- Turnkey mode ---
   if (turnkey) {

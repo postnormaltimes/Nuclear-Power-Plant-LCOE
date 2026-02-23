@@ -143,8 +143,10 @@ const App: React.FC = () => {
     const { min, max, step: s } = config;
 
     const isOpexOnly = OPEX_ONLY_VARS.has(sensitivityVar);
-    const { costOfEquityNom, costOfDebtNom } = calcNominalWacc(inputs);
+    const { costOfDebtNom } = calcNominalWacc(inputs);
+    const costOfEquityReal = inputs.costOfEquity / 100;
     const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
+    const piRate = inputs.inflationRate / 100;
     const Tc = Math.max(Math.round(inputs.constructionTime), 0);
     const TL = Math.max(Math.round(inputs.usefulLife), 0);
     const inflationMode = step === 1 ? 'lump_sum' : 'dynamic';
@@ -157,7 +159,7 @@ const App: React.FC = () => {
       ? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac)
       : null;
     const cachedDf = isOpexOnly
-      ? buildDfArray(costOfEquityNom, costOfDebtNom, gearingFrac, TL, declining, tcOffset)
+      ? buildDfArray(costOfEquityReal, costOfDebtNom, gearingFrac, piRate, TL, declining, tcOffset)
       : null;
     const precomputed = (cachedConstruction && cachedDf)
       ? { ...cachedConstruction, df: cachedDf }
