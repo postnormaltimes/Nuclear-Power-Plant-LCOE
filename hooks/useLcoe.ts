@@ -54,11 +54,12 @@ export function buildDfArray(
   const L = Math.floor(TL / 3);
 
   const getOpW = (opYear: number): number => {
-    // Declining cost of equity, fixed cost of debt
+    // Declining cost of equity (proportional): C1=base, C2=C1×2/3, C3=C1/3
+    // Cost of debt stays fixed. Blended WACC recomputed per-year.
     let ke = costOfEquityNom;
     if (declining) {
-      if (opYear > 2 * L) ke = Math.max(0, costOfEquityNom - 0.030);
-      else if (opYear > L) ke = Math.max(0, costOfEquityNom - 0.015);
+      if (opYear > 2 * L) ke = costOfEquityNom / 3;
+      else if (opYear > L) ke = costOfEquityNom * 2 / 3;
     }
     return gearing * costOfDebtNom + (1 - gearing) * ke;
   };

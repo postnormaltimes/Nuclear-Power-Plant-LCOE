@@ -267,7 +267,7 @@ const App: React.FC = () => {
                   <Toggle label="Cost of Equity Profile"
                     options={[{ key: 'off', label: 'Constant' }, { key: 'on', label: 'Declining' }]}
                     value={adv.decliningWacc ? 'on' : 'off'} onChange={advToggle('decliningWacc')}
-                    desc="Cost of equity declines over 3 tranches (−1.5pp, −3.0pp). Cost of debt stays fixed. WACC decreases."
+                    desc="Cost of equity declines proportionally over 3 tranches (C1, C1×⅔, C1×⅓). Cost of debt stays fixed."
                   />
                   <Toggle label="Financing Structure"
                     options={[{ key: 'off', label: 'Developer & Operator' }, { key: 'on', label: 'Turnkey' }]}
