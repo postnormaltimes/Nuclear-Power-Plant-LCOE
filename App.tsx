@@ -242,8 +242,8 @@ const App: React.FC = () => {
                 {([1, 2, 3] as LcoeStep[]).map(s => (
                   <button key={s} onClick={() => setStep(s)}
                     className={`flex-1 py-2.5 px-3 rounded-md text-sm font-semibold transition-colors ${step === s
-                        ? s === 1 ? 'bg-red-500/80 text-white shadow' : s === 2 ? 'bg-sky-500 text-white shadow' : 'bg-emerald-500 text-white shadow'
-                        : 'text-slate-400 hover:bg-slate-700'
+                      ? s === 1 ? 'bg-red-500/80 text-white shadow' : s === 2 ? 'bg-sky-500 text-white shadow' : 'bg-emerald-500 text-white shadow'
+                      : 'text-slate-400 hover:bg-slate-700'
                       }`}
                   >{s === 1 ? '① Wrong' : s === 2 ? '② Standard' : '③ Advanced'}</button>
                 ))}
@@ -259,11 +259,6 @@ const App: React.FC = () => {
               {/* Step 3 advanced toggles */}
               {step === 3 && (
                 <div className="space-y-4 mt-4 p-4 border border-slate-700 rounded-lg bg-slate-900/50">
-                  <Toggle label="Valuation Point (T=0)"
-                    options={[{ key: 'soc', label: 'Start of Construction' }, { key: 'cod', label: 'Commercial Operation' }]}
-                    value={adv.valuationPoint} onChange={advToggle('valuationPoint')}
-                    desc='"Time zero" for discounting. SOC reflects developer/owner perspective; COD reflects buyer/turnkey.'
-                  />
                   <Toggle label="Interest During Construction"
                     options={[{ key: 'off', label: 'Standard (Capitalized)' }, { key: 'on', label: 'RAB Model' }]}
                     value={adv.rabEnabled ? 'on' : 'off'} onChange={advToggle('rabEnabled')}
@@ -287,16 +282,7 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* Step 2: show valuation point toggle */}
-              {step === 2 && (
-                <div className="mt-4 p-4 border border-slate-700 rounded-lg bg-slate-900/50">
-                  <Toggle label="Valuation Point (T=0)"
-                    options={[{ key: 'soc', label: 'Start of Construction' }, { key: 'cod', label: 'Commercial Operation' }]}
-                    value={adv.valuationPoint} onChange={advToggle('valuationPoint')}
-                    desc='"Time zero" for discounting cash flows.'
-                  />
-                </div>
-              )}
+
             </div>
 
             {/* TABS */}
