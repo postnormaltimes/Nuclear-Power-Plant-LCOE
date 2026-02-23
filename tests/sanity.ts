@@ -30,23 +30,23 @@ function approxEq(a: number, b: number, tol = 1e-6) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: SOC vs COD consistency
-//   pvCapexSOC × (1 + wacc)^Tc should equal fvCapexCOD
-//   (both are PV-at-SOC and FV-at-COD of the same construction cash flows,
-//   so FV = PV × (1+w)^T must hold)
+// Test 1: fvCapexCOD is the asset book value at COD (Σ cNom + Σ capitalizedIdc)
+//   It should be strictly greater than pvCapexSOC (because of time value),
+//   and pvCapexSOC < fvCapexCOD < pvCapexSOC × (1+wacc)^Tc  
+//   (IDC < full WACC compounding since debt-only IDC uses Kd < WACC).
 // ---------------------------------------------------------------------------
-console.log('\nTest 1: SOC ↔ COD round-trip consistency');
+console.log('\nTest 1: fvCapexCOD > pvCapexSOC (COD book value > SOC present value)');
 {
     const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
     const { waccNomBlend } = calcNominalWacc(DEFAULTS);
     const Tc = DEFAULTS.constructionTime;
 
-    // PV of just the draws (pvOccSOC), compounded to COD, should match fvCapexCOD
-    // Note: pvCapexSOC includes capitalized IDC, but fvCapexCOD only compounds draws.
-    // So the round-trip is: pvOccSOC × (1+wacc)^Tc ≈ fvCapexCOD
-    const roundTrip = constr.pvOccSOC * Math.pow(1 + waccNomBlend, Tc);
-    assert(approxEq(roundTrip, constr.fvCapexCOD, 1e-4),
-        `pvOccSOC × (1+w)^Tc = ${roundTrip.toFixed(2)} ≈ fvCapexCOD = ${constr.fvCapexCOD.toFixed(2)}`);
+    const waccFV = constr.pvOccSOC * Math.pow(1 + waccNomBlend, Tc);
+
+    assert(constr.fvCapexCOD > constr.pvCapexSOC,
+        `fvCapexCOD (${constr.fvCapexCOD.toFixed(2)}) > pvCapexSOC (${constr.pvCapexSOC.toFixed(2)})`);
+    assert(constr.fvCapexCOD < waccFV,
+        `fvCapexCOD (${constr.fvCapexCOD.toFixed(2)}) < WACC-compounded FV (${waccFV.toFixed(2)}) — no double-count`);
 }
 
 // ---------------------------------------------------------------------------

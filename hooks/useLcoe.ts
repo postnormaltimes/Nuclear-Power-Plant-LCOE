@@ -180,21 +180,27 @@ export function buildConstructionPhase(
     }
   }
 
-  // Phase C: Compute PV at SOC and FV at COD.
-  // Construction draws occur at mid-year of each period (t + 0.5).
+  // Phase C: Compute PV at SOC and asset cost at COD.
+  // Construction cash flows occur at mid-year of each period (t + 0.5).
   let pvOccSOC = 0;
   let pvFinancingSOC = 0;
-  let fvCapexCOD = 0;
+  let totalNomCapital = 0;
+  let totalCapitalisedIdc = 0;
 
   for (let t = 0; t < Tc; t++) {
     const dfSoc = 1 / Math.pow(1 + waccNomBlend, t + 0.5);
     pvOccSOC += cNom[t] * dfSoc;
     pvFinancingSOC += capIdcPerYear[t] * dfSoc;
-    // Developer FV: compound draws to COD at WACC (IDC implicit, no double count)
-    fvCapexCOD += cNom[t] * Math.pow(1 + waccNomBlend, Tc - t - 0.5);
+    totalNomCapital += cNom[t];
+    totalCapitalisedIdc += capIdcPerYear[t];
   }
 
   const pvCapexSOC = pvOccSOC + pvFinancingSOC;
+
+  // Turnkey developer required recovery at COD = asset book value at COD.
+  // This is Σ cNom + Σ capitalizedIdc (under the chosen IDC mode).
+  // No WACC compounding — IDC build-up already embodies financing cost.
+  const fvCapexCOD = totalNomCapital + totalCapitalisedIdc;
 
   return { pvOccSOC, pvFinancingSOC, pvCapexSOC, fvCapexCOD, totalSurchargedIdc };
 }
