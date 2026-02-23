@@ -69,12 +69,14 @@ export function buildDfArray(
     cumProduct *= 1 + waccFrac;
   }
 
-  // Operational years with mid-year convention + declining tranches
+  // Operational years with mid-year convention + declining tranches.
+  // DF is computed BEFORE advancing cumProduct so Year 1 discounts at
+  // (1+w)^0.5, not (1+w)^1.5 (IEA/NEA mid-year standard).
   for (let k = 0; k < TL; k++) {
     const opYear = k + 1;
     const w = getOpW(opYear);
-    cumProduct *= 1 + w;
     df[k] = 1 / (cumProduct * Math.sqrt(1 + w));
+    cumProduct *= 1 + w;
   }
   return df;
 }
@@ -144,14 +146,15 @@ export function buildConstructionPhase(
 
   // Phase B: Capital accumulation with RAB intercept.
   //  - The ENTIRE capital structure (debt + equity) accrues a carrying cost.
-  //  - Carrying Cost = accumulated capital base × blended nominal WACC.
+  //  - Mid-year drawdown convention: interest accrues on accumulated balance
+  //    plus HALF of the current year's draw (IAEA standard).
   //  - RAB: surcharged portion paid by consumers; capitalised portion added to asset base.
   let K = 0;
   let totalSurchargedIdc = 0;
   let totalCapitalisedIdc = 0;
 
   for (let t = 0; t < Tc; t++) {
-    const carryingCost = K * waccNomBlend;
+    const carryingCost = (K + cNom[t] / 2) * waccNomBlend;
     const surcharged = carryingCost * rabFrac;
     const capitalized = carryingCost * (1 - rabFrac);
     totalSurchargedIdc += surcharged;
@@ -220,10 +223,14 @@ export const calculateLcoe = (
   const df: Float64Array = precomputed?.df ?? buildDfArray(waccNomBlend, TL, waccProfile, tcOffset);
 
   // --- Phase E: All-Nominal Matrix Summation ---
+  // Decommissioning sinking fund targets the INFLATED end-of-life cost,
+  // not the base-year overnight figure. Without this, the fund is
+  // underfunded relative to the actual nominal liability at year TL.
   const decomFundRate = 0.01;
+  const futureDecomCost = decommissioningCost * Math.pow(1 + pi, TL);
   const annualDecom = decomFundRate > 0 && TL > 0
-    ? decommissioningCost * (decomFundRate / (Math.pow(1 + decomFundRate, TL) - 1))
-    : (TL > 0 ? decommissioningCost / TL : 0);
+    ? futureDecomCost * (decomFundRate / (Math.pow(1 + decomFundRate, TL) - 1))
+    : (TL > 0 ? futureDecomCost / TL : 0);
 
   const baseFuelCost = fuelCost * annualMwh;
   const baseOmCost = omCost;
@@ -241,7 +248,7 @@ export const calculateLcoe = (
 
     for (let k = 0; k < TL; k++) {
       const d = df[k];
-      const escalation = Math.pow(1 + pi, k + 1);
+      const escalation = Math.pow(1 + pi, k + 0.5);  // mid-year timing, consistent with DF convention
       pvEnergy += annualMwh * d;
       pvOm += baseOmCost * escalation * d;
       pvFuel += baseFuelCost * escalation * d;
@@ -281,7 +288,7 @@ export const calculateLcoe = (
 
   for (let k = 0; k < TL; k++) {
     const d = df[k];
-    const escalation = Math.pow(1 + pi, k + 1);
+    const escalation = Math.pow(1 + pi, k + 0.5);  // mid-year timing, consistent with DF convention
     const e = annualMwh * d;
     const om = baseOmCost * escalation * d;
     const fl = baseFuelCost * escalation * d;
