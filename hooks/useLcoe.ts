@@ -86,7 +86,26 @@ export function buildDfArray(
 }
 
 // ---------------------------------------------------------------------------
+// Construction phase result: PV-at-SOC components + FV-at-COD for turnkey.
+// ---------------------------------------------------------------------------
+export interface ConstructionResult {
+  /** PV at SOC of nominal capital draws (overnight cost component). */
+  pvOccSOC: number;
+  /** PV at SOC of capitalized debt IDC (financing component). */
+  pvFinancingSOC: number;
+  /** pvOccSOC + pvFinancingSOC. */
+  pvCapexSOC: number;
+  /** FV at COD of developer outflows compounded at WACC (turnkey pricing). */
+  fvCapexCOD: number;
+  /** Surcharged IDC passed to ratepayers (RAB). */
+  totalSurchargedIdc: number;
+}
+
+// ---------------------------------------------------------------------------
 // Phases A + B: Construction cost build-up and IDC.
+//
+// Returns PV-at-SOC components (consistent with df[tcOffset=Tc])
+// and FV-at-COD (for turnkey developer pricing).
 //
 // inflationMode:
 //   'lump_sum' (Step 1 wrong): OCC × (1+π)^Tc then S-curve distribute
@@ -95,20 +114,23 @@ export function buildDfArray(
 // idcMode:
 //   'whole_wacc' (Step 1 wrong): carrying cost on FULL capital at blended WACC
 //   'debt_only'  (Step 2 correct): interest only on debt tranche at Kd_nom
-//
-// rabFrac:
-//   fraction of carrying cost paid by consumers (Step 3 RAB toggle)
 // ---------------------------------------------------------------------------
 export function buildConstructionPhase(
   inputs: LcoeInputs,
   inflationMode: 'lump_sum' | 'dynamic',
   idcMode: 'whole_wacc' | 'debt_only',
   rabFrac: number,
-): { assetCod: number; totalSurchargedIdc: number } {
+): ConstructionResult {
   const { overnightCost, constructionTime, inflationRate } = inputs;
 
   const Tc = Math.max(constructionTime, 0);
-  if (Tc === 0) return { assetCod: overnightCost, totalSurchargedIdc: 0 };
+  if (Tc === 0) return {
+    pvOccSOC: overnightCost,
+    pvFinancingSOC: 0,
+    pvCapexSOC: overnightCost,
+    fvCapexCOD: overnightCost,
+    totalSurchargedIdc: 0,
+  };
 
   const pi = inflationRate / 100;
   const gearing = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
@@ -132,54 +154,67 @@ export function buildConstructionPhase(
     }
   }
 
-  // Phase B: IDC accumulation
+  // Phase B: IDC accumulation — track per-year capitalized IDC
+  const capIdcPerYear = new Float64Array(Tc);
   let totalSurchargedIdc = 0;
-  let totalCapitalisedIdc = 0;
 
   if (idcMode === 'whole_wacc') {
-    // STEP 1 (wrong): interest on whole capital at blended WACC
     let K = 0;
     for (let t = 0; t < Tc; t++) {
       const carryingCost = (K + cNom[t] / 2) * waccNomBlend;
       const surcharged = carryingCost * rabFrac;
       const capitalized = carryingCost * (1 - rabFrac);
       totalSurchargedIdc += surcharged;
-      totalCapitalisedIdc += capitalized;
+      capIdcPerYear[t] = capitalized;
       K += cNom[t] + capitalized;
     }
   } else {
-    // STEP 2+ (correct): interest only on debt tranche at Kd_nom
-    // Equity required return is handled via discounting, not as capitalized interest.
-    let D = 0; // accumulated debt balance
+    let D = 0;
     for (let t = 0; t < Tc; t++) {
       const interest = (D + cNom[t] * gearing / 2) * costOfDebtNom;
       const surcharged = interest * rabFrac;
       const capitalized = interest * (1 - rabFrac);
       totalSurchargedIdc += surcharged;
-      totalCapitalisedIdc += capitalized;
+      capIdcPerYear[t] = capitalized;
       D += cNom[t] * gearing + capitalized;
     }
   }
 
-  const totalNomCapital = cNom.reduce((a, v) => a + v, 0);
-  const assetCod = totalNomCapital + totalCapitalisedIdc;
+  // Phase C: Compute PV at SOC and FV at COD.
+  // Construction draws occur at mid-year of each period (t + 0.5).
+  let pvOccSOC = 0;
+  let pvFinancingSOC = 0;
+  let fvCapexCOD = 0;
 
-  return { assetCod, totalSurchargedIdc };
+  for (let t = 0; t < Tc; t++) {
+    const dfSoc = 1 / Math.pow(1 + waccNomBlend, t + 0.5);
+    pvOccSOC += cNom[t] * dfSoc;
+    pvFinancingSOC += capIdcPerYear[t] * dfSoc;
+    // Developer FV: compound draws to COD at WACC (IDC implicit, no double count)
+    fvCapexCOD += cNom[t] * Math.pow(1 + waccNomBlend, Tc - t - 0.5);
+  }
+
+  const pvCapexSOC = pvOccSOC + pvFinancingSOC;
+
+  return { pvOccSOC, pvFinancingSOC, pvCapexSOC, fvCapexCOD, totalSurchargedIdc };
 }
 
 // ---------------------------------------------------------------------------
 // Core LCOE computation (single or double life).
 //
-// Returns the standard PV identity:  LCOE = PV(costs) / PV(MWh)
+// All inputs are PV-at-SOC consistent:
+//   pvOccSOC, pvFinancingSOC = PV at SOC of construction components
+//   df[] includes tcOffset=Tc, so operational PVs are also at SOC.
 // ---------------------------------------------------------------------------
 function computeCoreLcoe(
   inputs: LcoeInputs,
-  assetCod: number,
+  pvOccSOC: number,
+  pvFinancingSOC: number,
   totalSurchargedIdc: number,
   df: Float64Array,
   twoLives: boolean,
 ): LcoeResult {
-  const { usefulLife, overnightCost, fuelCost, omCost, loadHours, decommissioningCost, inflationRate } = inputs;
+  const { usefulLife, fuelCost, omCost, loadHours, decommissioningCost, inflationRate } = inputs;
   const pi = inflationRate / 100;
   const TL = Math.max(Math.round(usefulLife), 0);
   const annualMwh = loadHours > 0 ? loadHours / 1000 : 0;
@@ -196,12 +231,6 @@ function computeCoreLcoe(
   const baseFuelCost = fuelCost * annualMwh;
   const baseOmCost = omCost;
 
-  // Capital PV decomposition
-  const pvCapex = assetCod;
-  const occShare = assetCod > 0 ? Math.min(overnightCost / assetCod, 1) : 1;
-  const pvOcc = pvCapex * occShare;
-  const pvFinancing = pvCapex * (1 - occShare);
-
   if (!twoLives) {
     // ---------- SINGLE LIFE ----------
     let pvEnergy = 0, pvOm = 0, pvFuel = 0, pvDecom = 0;
@@ -214,11 +243,11 @@ function computeCoreLcoe(
       pvDecom += annualDecom * d;
     }
     if (pvEnergy <= 0) return zero;
-    const totalPvCost = pvOcc + pvFinancing + pvOm + pvFuel + pvDecom;
+    const totalPvCost = pvOccSOC + pvFinancingSOC + pvOm + pvFuel + pvDecom;
     return {
       totalLcoe: totalPvCost / pvEnergy,
-      occLcoe: pvOcc / pvEnergy,
-      financingLcoe: pvFinancing / pvEnergy,
+      occLcoe: pvOccSOC / pvEnergy,
+      financingLcoe: pvFinancingSOC / pvEnergy,
       fuelLcoe: pvFuel / pvEnergy,
       omLcoe: pvOm / pvEnergy,
       decommissioningLcoe: pvDecom / pvEnergy,
@@ -227,10 +256,6 @@ function computeCoreLcoe(
   }
 
   // ---------- 2-LIVES (PV-correct aggregation) ----------
-  // Half 1: years 0..N1-1, full capex + opex
-  // Half 2: years N1..TL-1, NO capex, opex only
-  // Total LCOE = PV(all costs) / PV(all energy)  (NOT arithmetic mean of ratios)
-  // Half-LCOEs are still reported as PV(half costs) / PV(half energy) for each subperiod.
   const N1 = Math.ceil(TL / 2);
 
   let pvE1 = 0, pvO1 = 0, pvF1 = 0, pvD1 = 0;
@@ -250,19 +275,16 @@ function computeCoreLcoe(
   const pvEnergyTotal = pvE1 + pvE2;
   if (pvEnergyTotal <= 0) return zero;
 
-  // Total LCOE from aggregate PVs (capex assigned entirely to full life)
   const pvOpexTotal = (pvO1 + pvO2) + (pvF1 + pvF2) + (pvD1 + pvD2);
-  const totalLcoe = (pvOcc + pvFinancing + pvOpexTotal) / pvEnergyTotal;
+  const totalLcoe = (pvOccSOC + pvFinancingSOC + pvOpexTotal) / pvEnergyTotal;
 
-  // Half-LCOEs for reporting: capex only in half 1
-  const halfLcoe1 = pvE1 > 0 ? (pvOcc + pvFinancing + pvO1 + pvF1 + pvD1) / pvE1 : 0;
+  const halfLcoe1 = pvE1 > 0 ? (pvOccSOC + pvFinancingSOC + pvO1 + pvF1 + pvD1) / pvE1 : 0;
   const halfLcoe2 = pvE2 > 0 ? (pvO2 + pvF2 + pvD2) / pvE2 : 0;
 
-  // Driver breakdown: allocate capex to full-life PV(energy), opex from full life
   return {
     totalLcoe,
-    occLcoe: pvOcc / pvEnergyTotal,
-    financingLcoe: pvFinancing / pvEnergyTotal,
+    occLcoe: pvOccSOC / pvEnergyTotal,
+    financingLcoe: pvFinancingSOC / pvEnergyTotal,
     fuelLcoe: (pvF1 + pvF2) / pvEnergyTotal,
     omLcoe: (pvO1 + pvO2) / pvEnergyTotal,
     decommissioningLcoe: (pvD1 + pvD2) / pvEnergyTotal,
@@ -276,19 +298,22 @@ function computeCoreLcoe(
 // Turnkey two-model structure.
 //
 // Developer model: builds the plant, sells at COD.
-//   Sale price such that developer NPV = 0 (sale proceeds = assetCod).
-//   Payment in 3 equal tranches during years 1–3 post-COD.
+//   Required COD recovery = FV at COD of all construction outflows
+//   compounded at WACC (fvCapexCOD). IDC is implicit in WACC compounding.
+//   Payment in 3 mid-year tranches post-COD.
 //
 // Buyer model: t=0 = COD, pays 3 tranches then operates.
-//   LCOE = PV(sale tranches + opex) / PV(MWh)  from buyer's perspective.
+//   LCOE = PV(sale tranches + opex) / PV(MWh) from buyer's perspective.
+//   OCC/Financing decomposition uses pvOccSOC/pvFinancingSOC ratio.
 // ---------------------------------------------------------------------------
 function computeTurnkeyLcoe(
   inputs: LcoeInputs,
-  assetCod: number,
-  totalSurchargedIdc: number,
+  fvCapexCOD: number,
+  pvOccSOC: number,
+  pvFinancingSOC: number,
+  pvCapexSOC: number,
   waccNom: number,
   declining: boolean,
-  twoLives: boolean,
 ): LcoeResult {
   const { usefulLife, fuelCost, omCost, loadHours, decommissioningCost, inflationRate } = inputs;
   const pi = inflationRate / 100;
@@ -297,14 +322,13 @@ function computeTurnkeyLcoe(
   const zero: LcoeResult = { totalLcoe: 0, occLcoe: 0, financingLcoe: 0, fuelLcoe: 0, omLcoe: 0, decommissioningLcoe: 0, surchargedIdcLcoe: 0 };
   if (annualMwh <= 0 || TL <= 0) return zero;
 
-  // Developer sale price: NPV=0 means developer recoups assetCod.
-  // Sale tranches in years 1–3 post-COD. Developer discounts at waccNom.
-  // Use mid-year convention (t-0.5) to match the buyer's DF array.
-  // P_annual × Σ(1/(1+w)^(t-0.5), t=1..3) = assetCod
+  // Developer sale price: developer requires fvCapexCOD at COD.
+  // Paid in 3 mid-year tranches post-COD.
+  // P_annual × Σ(1/(1+w)^(t-0.5), t=1..3) = fvCapexCOD
   const nTranches = Math.min(3, TL);
   let annuityFactor = 0;
   for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNom, t - 0.5);
-  const annualPayment = annuityFactor > 0 ? assetCod / annuityFactor : assetCod;
+  const annualPayment = annuityFactor > 0 ? fvCapexCOD / annuityFactor : fvCapexCOD;
   const developerSalePrice = annualPayment * nTranches;
 
   // Buyer model: t=0 = COD, no construction-period discounting
@@ -323,7 +347,7 @@ function computeTurnkeyLcoe(
   const baseFuelCost = fuelCost * annualMwh;
   const baseOmCost = omCost;
 
-  // PV of sale tranches (buyer pays in years 1..nTranches)
+  // PV of sale tranches (buyer pays in years 1..nTranches, mid-year)
   let pvSaleTranches = 0;
   for (let k = 0; k < nTranches; k++) pvSaleTranches += annualPayment * buyerDf[k];
 
@@ -339,13 +363,11 @@ function computeTurnkeyLcoe(
 
   if (pvEnergy <= 0) return zero;
 
-  // Decompose sale payments into OCC vs Financing using the same ratio as
-  // the standard model: occShare = overnightCost / assetCod.
-  // This gives the buyer the same D/E structure and makes the financing
-  // component reflect the developer's IDC markup over base OCC.
-  const occShare = assetCod > 0 ? Math.min(inputs.overnightCost / assetCod, 1) : 1;
-  const pvOcc = pvSaleTranches * occShare;
-  const pvFinancing = pvSaleTranches * (1 - occShare);
+  // Decompose sale payments into OCC vs Financing using the PV-at-SOC ratio
+  // from the construction phase (basis-consistent).
+  const occRatio = pvCapexSOC > 0 ? pvOccSOC / pvCapexSOC : 1;
+  const pvOcc = pvSaleTranches * occRatio;
+  const pvFinancing = pvSaleTranches * (1 - occRatio);
 
   const totalPvCost = pvSaleTranches + pvOm + pvFuel + pvDecom;
   return {
@@ -362,17 +384,12 @@ function computeTurnkeyLcoe(
 
 // ---------------------------------------------------------------------------
 // Main entry point: step-aware calculateLcoe.
-//
-// Step 1 (Wrong):    lump-sum inflation + whole-WACC IDC
-// Step 2 (Standard): dynamic inflation + debt-only IDC
-// Step 3 (Advanced): same baseline as Step 2, plus independent toggles
 // ---------------------------------------------------------------------------
 export const calculateLcoe = (
   inputs: LcoeInputs,
   step: LcoeStep,
   adv: AdvancedToggles,
-  // Optional pre-computed (sensitivity optimisation)
-  precomputed?: { assetCod: number; totalSurchargedIdc: number; df: Float64Array },
+  precomputed?: ConstructionResult & { df: Float64Array },
 ): LcoeResult => {
   const { usefulLife, constructionTime } = inputs;
   const TL = Math.max(Math.round(usefulLife), 0);
@@ -387,11 +404,11 @@ export const calculateLcoe = (
   const twoLives = step === 3 && adv.twoLives;
   const turnkey = step === 3 && adv.turnkey;
 
-  // Valuation point: always SOC (Turnkey buyer uses COD internally via its own DF array)
+  // Valuation point: always SOC
   const tcOffset = Tc;
 
   // --- Construction phase ---
-  const { assetCod, totalSurchargedIdc } = precomputed ?? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac);
+  const constr = precomputed ?? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac);
 
   // --- Discount factors ---
   const { costOfDebtNom } = calcNominalWacc(inputs);
@@ -402,11 +419,15 @@ export const calculateLcoe = (
 
   // --- Turnkey mode ---
   if (turnkey) {
-    return computeTurnkeyLcoe(inputs, assetCod, totalSurchargedIdc, waccNomBlend, declining, twoLives);
+    return computeTurnkeyLcoe(
+      inputs, constr.fvCapexCOD,
+      constr.pvOccSOC, constr.pvFinancingSOC, constr.pvCapexSOC,
+      waccNomBlend, declining,
+    );
   }
 
   // --- Standard / 2-Lives computation ---
-  return computeCoreLcoe(inputs, assetCod, totalSurchargedIdc, df, twoLives);
+  return computeCoreLcoe(inputs, constr.pvOccSOC, constr.pvFinancingSOC, constr.totalSurchargedIdc, df, twoLives);
 };
 
 // ---------------------------------------------------------------------------
