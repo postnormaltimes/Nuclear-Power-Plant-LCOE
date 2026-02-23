@@ -1,23 +1,20 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { SliderInput, PieChart, LineChart, RangeSlider } from './components/UI';
 import { useLcoe, calculateLcoe, buildConstructionPhase, buildDfArray, OPEX_ONLY_VARS, calcNominalWacc } from './hooks/useLcoe';
-import type { LcoeInputs } from './types';
+import type { LcoeInputs, LcoeStep, AdvancedToggles } from './types';
 
 const formatCurrency = (value: number) => {
   if (!isFinite(value) || isNaN(value)) return '$0.00';
   return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    style: 'currency', currency: 'USD',
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
   }).format(value);
 };
 
 const formatNumber = (value: number, digits = 0) => {
   if (!isFinite(value) || isNaN(value)) return '0';
   return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
   }).format(value);
 };
 
@@ -34,35 +31,75 @@ const PARAM_CONFIGS: Record<keyof LcoeInputs, ParamConfig> = {
   loadHours: { label: 'Annual Full-Load Hours', min: 876, max: 8760, step: 87.6, unit: 'hours', formatter: (v) => `${formatNumber(v)} (${((v / 8760) * 100).toFixed(0)}%)`, chartFormatter: (v) => formatNumber(v) },
   decommissioningCost: { label: 'Decommissioning Costs', min: 300, max: 3000, step: 50, unit: '$/kW', formatter: (v) => formatCurrency(v).replace('.00', ''), chartFormatter: (v) => formatNumber(v) },
   rabProportion: { label: 'RAB Consumer Burden', min: 0, max: 100, step: 1, unit: '%', formatter: (v) => `${v}%`, chartFormatter: (v) => `${v}%` },
-  inflationRate: { label: 'JRC Dynamic Inflation', min: 0, max: 10, step: 0.1, unit: '%', formatter: (v) => `${v.toFixed(1)}%`, chartFormatter: (v) => `${v.toFixed(1)}%` },
+  inflationRate: { label: 'Inflation Rate', min: 0, max: 10, step: 0.1, unit: '%', formatter: (v) => `${v.toFixed(1)}%`, chartFormatter: (v) => `${v.toFixed(1)}%` },
 };
+
+// Step descriptions for pedagogical flow
+const STEP_DESCRIPTIONS: Record<LcoeStep, { title: string; subtitle: string; body: string }> = {
+  1: {
+    title: '① Wrong LCOE',
+    subtitle: 'Common errors in simplified approaches',
+    body: `This step intentionally applies two common errors to illustrate their impact:\n\n• Lump-sum inflation: applies a single cumulative factor (1+π)^Tc to translate all overnight costs from SOC to COD, exaggerating inflation effects.\n\n• Interest on whole capital: IDC is computed on the entire capital base (debt + equity) using the blended WACC, rather than only on the debt tranche. Equity is double-counted — once through interest and again through discounting.`,
+  },
+  2: {
+    title: '② Standard LCOE',
+    subtitle: 'Corrected DCF baseline',
+    body: `Corrects both errors from Step 1:\n\n• Dynamic inflation: each construction tranche is inflated year-by-year to its own period, matching standard JRC methodology. Converges with lump-sum when π = 0.\n\n• Debt-only IDC: interest accrues only on the outstanding debt balance at the nominal cost of debt. Equity earns its required return through discounting, not as capitalized interest. With gearing = 0%, IDC = 0.`,
+  },
+  3: {
+    title: '③ Advanced LCOE',
+    subtitle: 'Toggle-able financial model enhancements',
+    body: `Starting from the correct Step 2 baseline, independently toggle advanced features to see their impact on LCOE.`,
+  },
+};
+
+// Segmented toggle button component
+const Toggle: React.FC<{
+  label: string; options: { key: string; label: string }[];
+  value: string; onChange: (key: string) => void; desc?: string;
+}> = ({ label, options, value, onChange, desc }) => (
+  <div>
+    <label className="block text-sm font-medium text-slate-300 mb-2">{label}</label>
+    <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
+      {options.map(o => (
+        <button key={o.key} onClick={() => onChange(o.key)}
+          className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors ${value === o.key ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
+        >{o.label}</button>
+      ))}
+    </div>
+    {desc && <p className="text-xs text-slate-500 mt-2 px-1">{desc}</p>}
+  </div>
+);
 
 const App: React.FC = () => {
   const [inputs, setInputs] = useState<LcoeInputs>({
     usefulLife: 60,
     overnightCost: 6500,
     constructionTime: 8,
-    costOfEquity: 9.0,     // real cost of equity (%)
-    costOfDebt: 4.0,       // real cost of debt (%)
-    targetGearing: 60,     // 60% debt / 40% equity (typical nuclear project finance)
+    costOfEquity: 9.0,
+    costOfDebt: 4.0,
+    targetGearing: 60,
     fuelCost: 10,
     omCost: 140,
-    loadHours: 7884,       // 90% capacity factor
+    loadHours: 7884,
     decommissioningCost: 1000,
     rabProportion: 50,
     inflationRate: 2,
   });
 
-  const [isRabEnabled, setIsRabEnabled] = useState(false);
-  const [t0Timing, setT0Timing] = useState<'soc' | 'cod'>('cod');
-  const [waccProfile, setWaccProfile] = useState<'constant' | 'declining'>('constant');
-  const [inflationAccounting, setInflationAccounting] = useState<'lump_sum' | 'dynamic'>('dynamic');
-  const [lifeTreatment, setLifeTreatment] = useState<'single' | 'double'>('single');
+  // 3-step state
+  const [step, setStep] = useState<LcoeStep>(2);
+  const [adv, setAdv] = useState<AdvancedToggles>({
+    rabEnabled: false,
+    decliningWacc: false,
+    turnkey: false,
+    twoLives: false,
+    valuationPoint: 'cod',
+  });
 
   const [sensitivityVar, setSensitivityVar] = useState<keyof LcoeInputs>('overnightCost');
   const [sensitivityVar2, setSensitivityVar2] = useState<keyof LcoeInputs>('costOfEquity');
   const [sensitivityVar2Range, setSensitivityVar2Range] = useState<[number, number]>([PARAM_CONFIGS.costOfEquity.min, PARAM_CONFIGS.costOfEquity.max]);
-
   const [activeTab, setActiveTab] = useState('summary');
 
   useEffect(() => {
@@ -81,35 +118,46 @@ const App: React.FC = () => {
     setInputs(prev => ({ ...prev, [field]: value }));
   };
 
-  const lcoeResult = useLcoe(inputs, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment);
+  const advToggle = (key: keyof AdvancedToggles) => (val: string) => {
+    if (key === 'valuationPoint') {
+      setAdv(prev => ({ ...prev, valuationPoint: val as 'soc' | 'cod' }));
+    } else {
+      setAdv(prev => ({ ...prev, [key]: val === 'on' }));
+    }
+  };
+
+  const lcoeResult = useLcoe(inputs, step, adv);
+  const stepInfo = STEP_DESCRIPTIONS[step];
 
   const pieChartData = useMemo(() => [
-    { valueKey: 'occLcoe', color: '#0ea5e9', label: 'Overnight Cost' },    // sky-500
-    { valueKey: 'financingLcoe', color: '#818cf8', label: 'Financing' },     // indigo-400
-    { valueKey: 'fuelLcoe', color: '#facc15', label: 'Fuel' },            // yellow-400
-    { valueKey: 'omLcoe', color: '#4ade80', label: 'O&M' },               // green-400
-    { valueKey: 'decommissioningLcoe', color: '#fb923c', label: 'Decommissioning' }, // orange-400
-  ].map(d => ({ ...d, value: lcoeResult[d.valueKey as keyof typeof lcoeResult] })), [lcoeResult]);
+    { valueKey: 'occLcoe', color: '#0ea5e9', label: adv.turnkey && step === 3 ? 'Sale Payments' : 'Overnight Cost' },
+    { valueKey: 'financingLcoe', color: '#818cf8', label: 'Financing' },
+    { valueKey: 'fuelLcoe', color: '#facc15', label: 'Fuel' },
+    { valueKey: 'omLcoe', color: '#4ade80', label: 'O&M' },
+    { valueKey: 'decommissioningLcoe', color: '#fb923c', label: 'Decommissioning' },
+  ].map(d => ({ ...d, value: lcoeResult[d.valueKey as keyof typeof lcoeResult] })), [lcoeResult, step, adv.turnkey]);
 
+  // Sensitivity analysis
   const sensitivityChartData = useMemo(() => {
     const config = PARAM_CONFIGS[sensitivityVar];
-    const { min, max, step } = config;
+    const { min, max, step: s } = config;
 
-    // Optimisation: if the x-axis variable only affects operations (Phase E),
-    // pre-compute the construction phase (assetCod, totalSurchargedIdc) and
-    // the discount factor array once and reuse them for every sweep step.
     const isOpexOnly = OPEX_ONLY_VARS.has(sensitivityVar);
-    // Blended nominal WACC for DF array (derived from current inputs)
     const { waccNomBlend } = calcNominalWacc(inputs);
     const Tc = Math.max(Math.round(inputs.constructionTime), 0);
     const TL = Math.max(Math.round(inputs.usefulLife), 0);
-    const tcOffset = t0Timing === 'soc' ? Tc : 0;
+    const inflationMode = step === 1 ? 'lump_sum' : 'dynamic';
+    const idcMode = step === 1 ? 'whole_wacc' : 'debt_only';
+    const rabFrac = (step === 3 && adv.rabEnabled) ? Math.min(Math.max(inputs.rabProportion, 0), 100) / 100 : 0;
+    const declining = step === 3 && adv.decliningWacc;
+    const valPoint = step === 1 ? 'soc' : adv.valuationPoint;
+    const tcOffset = valPoint === 'soc' ? Tc : 0;
 
     const cachedConstruction = isOpexOnly
-      ? buildConstructionPhase(inputs, isRabEnabled, inflationAccounting)
+      ? buildConstructionPhase(inputs, inflationMode, idcMode, rabFrac)
       : null;
     const cachedDf = isOpexOnly
-      ? buildDfArray(waccNomBlend, TL, waccProfile, tcOffset)
+      ? buildDfArray(waccNomBlend, TL, declining, tcOffset)
       : null;
     const precomputed = (cachedConstruction && cachedDf)
       ? { ...cachedConstruction, df: cachedDf }
@@ -119,25 +167,24 @@ const App: React.FC = () => {
     const minSeries: { x: number; y: number }[] = [];
     const maxSeries: { x: number; y: number }[] = [];
 
-    for (let i = min; i <= max; i += step) {
+    for (let i = min; i <= max; i += s) {
       const xVal = parseFloat(i.toFixed(5));
-      const baselineResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
-      const minResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
-      const maxResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
-      baselineSeries.push({ x: xVal, y: baselineResult.totalLcoe });
-      minSeries.push({ x: xVal, y: minResult.totalLcoe });
-      maxSeries.push({ x: xVal, y: maxResult.totalLcoe });
+      const bl = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, step, adv, precomputed);
+      const mn = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, step, adv, precomputed);
+      const mx = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, step, adv, precomputed);
+      baselineSeries.push({ x: xVal, y: bl.totalLcoe });
+      minSeries.push({ x: xVal, y: mn.totalLcoe });
+      maxSeries.push({ x: xVal, y: mx.totalLcoe });
     }
 
-    // Ensure the max is included if step doesn't land exactly
     if (baselineSeries.length > 0 && baselineSeries[baselineSeries.length - 1].x < max) {
       const xVal = max;
-      const baselineResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
-      const minResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
-      const maxResult = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment, precomputed);
-      baselineSeries.push({ x: xVal, y: baselineResult.totalLcoe });
-      minSeries.push({ x: xVal, y: minResult.totalLcoe });
-      maxSeries.push({ x: xVal, y: maxResult.totalLcoe });
+      const bl = calculateLcoe({ ...inputs, [sensitivityVar]: xVal }, step, adv, precomputed);
+      const mn = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[0] }, step, adv, precomputed);
+      const mx = calculateLcoe({ ...inputs, [sensitivityVar]: xVal, [sensitivityVar2]: sensitivityVar2Range[1] }, step, adv, precomputed);
+      baselineSeries.push({ x: xVal, y: bl.totalLcoe });
+      minSeries.push({ x: xVal, y: mn.totalLcoe });
+      maxSeries.push({ x: xVal, y: mx.totalLcoe });
     }
 
     return {
@@ -153,26 +200,26 @@ const App: React.FC = () => {
       yFormatter: (v: number) => formatCurrency(v).replace('$', ''),
       xFormatter: config.chartFormatter,
     };
-  }, [sensitivityVar, sensitivityVar2, sensitivityVar2Range, inputs, isRabEnabled, t0Timing, waccProfile, inflationAccounting, lifeTreatment]);
+  }, [sensitivityVar, sensitivityVar2, sensitivityVar2Range, inputs, step, adv]);
 
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-300 p-4 sm:p-6 md:p-8">
       <div className="max-w-7xl mx-auto">
         <header className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-slate-100">Nuclear LCOE Calculator</h1>
-          <p className="mt-2 text-lg text-slate-400">Interactively model the Levelized Cost of Electricity for a nuclear power plant.</p>
+          <h1 className="text-4xl font-bold text-slate-100">NPP LCOE Financial Model</h1>
+          <p className="mt-2 text-lg text-slate-400">3-step pedagogical tool: Wrong → Standard → Advanced</p>
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+          {/* LEFT PANEL: Input Parameters */}
           <div className="lg:col-span-2 bg-slate-800 p-6 rounded-2xl shadow-lg border border-slate-700 space-y-6">
             <h2 className="text-2xl font-semibold border-b border-slate-700 pb-4 text-slate-200">Input Parameters</h2>
             {Object.entries(PARAM_CONFIGS).map(([key, config]) => {
-              // RAB Consumer Burden slider only visible when RAB model is active
-              if (key === 'rabProportion' && !isRabEnabled) return null;
+              // RAB Consumer Burden slider only visible when RAB model is active in Step 3
+              if (key === 'rabProportion' && !(step === 3 && adv.rabEnabled)) return null;
               return (
-                <SliderInput
-                  key={key}
+                <SliderInput key={key}
                   label={config.label}
                   value={inputs[key as keyof LcoeInputs]}
                   min={config.min} max={config.max} step={config.step} unit={config.unit}
@@ -183,128 +230,112 @@ const App: React.FC = () => {
             })}
           </div>
 
+          {/* RIGHT PANEL: Financing Model + Results */}
           <div className="lg:col-span-3 bg-slate-800 p-6 rounded-2xl shadow-lg border border-slate-700">
+
+            {/* 3-STEP SELECTOR */}
             <div className="mb-6">
-              <h3 className="text-lg font-semibold text-slate-200 mb-3">Financing Model</h3>
-              <div className="space-y-4 p-4 border border-slate-700 rounded-lg bg-slate-900/50">
-                {/* Inflation Accounting Selector — FIRST in panel */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Inflation Accounting (SOC→COD)</label>
-                  <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
-                    <button
-                      onClick={() => setInflationAccounting('lump_sum')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${inflationAccounting === 'lump_sum' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Lump-Sum Indexation</button>
-                    <button
-                      onClick={() => setInflationAccounting('dynamic')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${inflationAccounting === 'dynamic' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Dynamic Inflation</button>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-2 px-1">
-                    Lump-sum applies one cumulative factor (1+π)^Tc to translate SOC costs to COD. Dynamic inflates each construction tranche to its own period, matching the JRC methodology.
-                  </p>
-                </div>
+              <h3 className="text-lg font-semibold text-slate-200 mb-3">LCOE Methodology Steps</h3>
 
-                {/* RAB Selector */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Interest During Construction</label>
-                  <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
-                    <button
-                      onClick={() => setIsRabEnabled(false)}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${!isRabEnabled ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Standard (Capitalized)</button>
-                    <button
-                      onClick={() => setIsRabEnabled(true)}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${isRabEnabled ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > RAB Model</button>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-2 px-1">
-                    The RAB mechanism lowers LCOE as consumers or taxpayers cover (part of) interest payments during the construction phase, preventing (or reducing the extent of) capitalization. All else equal, this reduces financing costs.
-                  </p>
-                </div>
-
-                {/* T=0 Selector */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Valuation Point (T=0)</label>
-                  <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
-                    <button
-                      onClick={() => setT0Timing('soc')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${t0Timing === 'soc' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Start of Construction</button>
-                    <button
-                      onClick={() => setT0Timing('cod')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${t0Timing === 'cod' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Commercial Operation</button>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-2 px-1">
-                    "Time zero" for discounting affects the time value of money, especially for long construction periods. "SOC" can be thought as reflecting a project in which the developer is also the owner & operator, "COD" a turneky contract.
-                  </p>
-                </div>
-
-                {/* WACC Profile Selector */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">WACC Profile</label>
-                  <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
-                    <button
-                      onClick={() => setWaccProfile('constant')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${waccProfile === 'constant' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Constant</button>
-                    <button
-                      onClick={() => setWaccProfile('declining')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${waccProfile === 'declining' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Declining</button>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-2 px-1">
-                    When forecast periods are long and uncertainty is high, research suggests a declining WACC to evaluate investements in long-lived assets. In this model, a gradual decline for every third of useful life is applied.
-                  </p>
-                </div>
-
-                {/* Asset Life Treatment Selector — LAST in panel */}
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Asset Life Treatment</label>
-                  <div className="flex items-center space-x-2 p-1 bg-slate-800 rounded-lg">
-                    <button
-                      onClick={() => setLifeTreatment('single')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${lifeTreatment === 'single' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Single Life (Standard)</button>
-                    <button
-                      onClick={() => setLifeTreatment('double')}
-                      className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${lifeTreatment === 'double' ? 'bg-sky-500 text-white shadow' : 'text-slate-300 hover:bg-slate-700'}`}
-                    > Double Life (2-Stage)</button>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-2 px-1">
-                    Double life splits the useful life in two halves. CAPEX is recovered entirely in the first half; the second half operates fully depreciated. Final LCOE = simple average of both half-LCOEs.
-                  </p>
-                </div>
+              {/* Step buttons */}
+              <div className="flex items-center space-x-2 p-1 bg-slate-900 rounded-lg mb-4">
+                {([1, 2, 3] as LcoeStep[]).map(s => (
+                  <button key={s} onClick={() => setStep(s)}
+                    className={`flex-1 py-2.5 px-3 rounded-md text-sm font-semibold transition-colors ${step === s
+                        ? s === 1 ? 'bg-red-500/80 text-white shadow' : s === 2 ? 'bg-sky-500 text-white shadow' : 'bg-emerald-500 text-white shadow'
+                        : 'text-slate-400 hover:bg-slate-700'
+                      }`}
+                  >{s === 1 ? '① Wrong' : s === 2 ? '② Standard' : '③ Advanced'}</button>
+                ))}
               </div>
+
+              {/* Step explanation panel */}
+              <div className={`p-4 border rounded-lg ${step === 1 ? 'border-red-500/40 bg-red-950/20' : step === 2 ? 'border-sky-500/40 bg-sky-950/20' : 'border-emerald-500/40 bg-emerald-950/20'}`}>
+                <h4 className="font-semibold text-slate-200 text-sm">{stepInfo.title}</h4>
+                <p className="text-xs text-slate-400 mb-2">{stepInfo.subtitle}</p>
+                <p className="text-xs text-slate-500 whitespace-pre-line leading-relaxed">{stepInfo.body}</p>
+              </div>
+
+              {/* Step 3 advanced toggles */}
+              {step === 3 && (
+                <div className="space-y-4 mt-4 p-4 border border-slate-700 rounded-lg bg-slate-900/50">
+                  <Toggle label="Valuation Point (T=0)"
+                    options={[{ key: 'soc', label: 'Start of Construction' }, { key: 'cod', label: 'Commercial Operation' }]}
+                    value={adv.valuationPoint} onChange={advToggle('valuationPoint')}
+                    desc='"Time zero" for discounting. SOC reflects developer/owner perspective; COD reflects buyer/turnkey.'
+                  />
+                  <Toggle label="Interest During Construction"
+                    options={[{ key: 'off', label: 'Standard (Capitalized)' }, { key: 'on', label: 'RAB Model' }]}
+                    value={adv.rabEnabled ? 'on' : 'off'} onChange={advToggle('rabEnabled')}
+                    desc="RAB: consumers cover part of construction financing costs, reducing capitalized IDC."
+                  />
+                  <Toggle label="WACC Profile"
+                    options={[{ key: 'off', label: 'Constant' }, { key: 'on', label: 'Declining' }]}
+                    value={adv.decliningWacc ? 'on' : 'off'} onChange={advToggle('decliningWacc')}
+                    desc="Declining WACC applies a 3-tranche schedule, reducing the discount rate for later operational years."
+                  />
+                  <Toggle label="Financing Structure"
+                    options={[{ key: 'off', label: 'Developer & Operator' }, { key: 'on', label: 'Turnkey' }]}
+                    value={adv.turnkey ? 'on' : 'off'} onChange={advToggle('turnkey')}
+                    desc="Turnkey: developer sells at COD (NPV=0 sale), buyer pays in 3 annual tranches. Shows buyer LCOE."
+                  />
+                  <Toggle label="Asset Life Treatment"
+                    options={[{ key: 'off', label: 'Single Life' }, { key: 'on', label: '2-Lives' }]}
+                    value={adv.twoLives ? 'on' : 'off'} onChange={advToggle('twoLives')}
+                    desc="2-Lives: CAPEX recovered in first half. Second half fully depreciated. Final LCOE = simple average."
+                  />
+                </div>
+              )}
+
+              {/* Step 2: show valuation point toggle */}
+              {step === 2 && (
+                <div className="mt-4 p-4 border border-slate-700 rounded-lg bg-slate-900/50">
+                  <Toggle label="Valuation Point (T=0)"
+                    options={[{ key: 'soc', label: 'Start of Construction' }, { key: 'cod', label: 'Commercial Operation' }]}
+                    value={adv.valuationPoint} onChange={advToggle('valuationPoint')}
+                    desc='"Time zero" for discounting cash flows.'
+                  />
+                </div>
+              )}
             </div>
 
+            {/* TABS */}
             <div className="border-b border-slate-700">
               <nav className="-mb-px flex space-x-6" aria-label="Tabs">
                 {(['summary', 'sensitivity'] as const).map(tab => (
                   <button key={tab} onClick={() => setActiveTab(tab)} className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm capitalize ${activeTab === tab ? 'border-sky-400 text-sky-400' : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-500'}`}
                     aria-current={activeTab === tab ? 'page' : undefined}
-                  >
-                    {tab}
-                  </button>
+                  >{tab}</button>
                 ))}
               </nav>
             </div>
 
+            {/* TAB CONTENT */}
             <div className="mt-6">
               {activeTab === 'summary' && (
                 <div className="flex flex-col items-center" role="tabpanel">
                   <div className="text-center mb-8">
-                    <p className="text-slate-400 font-medium">Total LCOE</p>
-                    <p className="text-4xl md:text-5xl font-bold text-sky-400 my-2">
+                    <p className="text-slate-400 font-medium">
+                      {step === 1 ? 'Wrong' : step === 2 ? 'Standard' : 'Advanced'} LCOE
+                    </p>
+                    <p className={`text-4xl md:text-5xl font-bold my-2 ${step === 1 ? 'text-red-400' : step === 2 ? 'text-sky-400' : 'text-emerald-400'}`}>
                       {formatCurrency(lcoeResult.totalLcoe)}
                     </p>
                     <p className="text-slate-400 font-medium">per MWh</p>
-                    {lifeTreatment === 'double' && lcoeResult.halfLcoe1 != null && lcoeResult.halfLcoe2 != null && (
+
+                    {/* Half LCOEs for 2-Lives */}
+                    {step === 3 && adv.twoLives && lcoeResult.halfLcoe1 != null && lcoeResult.halfLcoe2 != null && (
                       <p className="text-sm text-slate-400 mt-2">
-                        Half 1 LCOE: <span className="font-semibold text-slate-200">{formatCurrency(lcoeResult.halfLcoe1)}</span>
+                        Half 1: <span className="font-semibold text-slate-200">{formatCurrency(lcoeResult.halfLcoe1)}</span>
                         {' | '}
-                        Half 2 LCOE: <span className="font-semibold text-slate-200">{formatCurrency(lcoeResult.halfLcoe2)}</span>
+                        Half 2: <span className="font-semibold text-slate-200">{formatCurrency(lcoeResult.halfLcoe2)}</span>
+                      </p>
+                    )}
+
+                    {/* Developer sale price for Turnkey */}
+                    {step === 3 && adv.turnkey && lcoeResult.developerSalePrice != null && (
+                      <p className="text-sm text-slate-400 mt-2">
+                        Developer sale price: <span className="font-semibold text-slate-200">{formatCurrency(lcoeResult.developerSalePrice)}/kW</span>
                       </p>
                     )}
                   </div>

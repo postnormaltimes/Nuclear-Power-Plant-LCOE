@@ -32,4 +32,27 @@ export interface LcoeResult {
   halfLcoe1?: number;
   /** Half 2 LCOE (double-life mode only): fully depreciated, opex only. */
   halfLcoe2?: number;
+  /** Developer sale price in Turnkey mode ($/kW). */
+  developerSalePrice?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Step enum for 3-step pedagogical flow
+// ---------------------------------------------------------------------------
+export type LcoeStep = 1 | 2 | 3;
+
+// ---------------------------------------------------------------------------
+// Advanced toggles for Step 3
+// ---------------------------------------------------------------------------
+export interface AdvancedToggles {
+  /** RAB model: share of IDC paid by consumers during construction. */
+  rabEnabled: boolean;
+  /** Declining WACC: 3-tranche declining discount rate. */
+  decliningWacc: boolean;
+  /** Turnkey: developer sells at COD, buyer computes LCOE from sale price. */
+  turnkey: boolean;
+  /** 2-Lives: simple average of two half-LCOEs. */
+  twoLives: boolean;
+  /** SOC vs COD valuation point (affects all steps). */
+  valuationPoint: 'soc' | 'cod';
 }
