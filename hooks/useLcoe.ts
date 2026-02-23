@@ -330,11 +330,19 @@ function computeTurnkeyLcoe(
 
   if (pvEnergy <= 0) return zero;
 
+  // Decompose sale payments into OCC vs Financing using the same ratio as
+  // the standard model: occShare = overnightCost / assetCod.
+  // This gives the buyer the same D/E structure and makes the financing
+  // component reflect the developer's IDC markup over base OCC.
+  const occShare = assetCod > 0 ? Math.min(inputs.overnightCost / assetCod, 1) : 1;
+  const pvOcc = pvSaleTranches * occShare;
+  const pvFinancing = pvSaleTranches * (1 - occShare);
+
   const totalPvCost = pvSaleTranches + pvOm + pvFuel + pvDecom;
   return {
     totalLcoe: totalPvCost / pvEnergy,
-    occLcoe: pvSaleTranches / pvEnergy,   // buyer's "capex" = sale payments
-    financingLcoe: 0,                      // financing embedded in sale price
+    occLcoe: pvOcc / pvEnergy,
+    financingLcoe: pvFinancing / pvEnergy,
     fuelLcoe: pvFuel / pvEnergy,
     omLcoe: pvOm / pvEnergy,
     decommissioningLcoe: pvDecom / pvEnergy,

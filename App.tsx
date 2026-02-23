@@ -130,7 +130,7 @@ const App: React.FC = () => {
   const stepInfo = STEP_DESCRIPTIONS[step];
 
   const pieChartData = useMemo(() => [
-    { valueKey: 'occLcoe', color: '#0ea5e9', label: adv.turnkey && step === 3 ? 'Sale Payments' : 'Overnight Cost' },
+    { valueKey: 'occLcoe', color: '#0ea5e9', label: 'Overnight Cost' },
     { valueKey: 'financingLcoe', color: '#818cf8', label: 'Financing' },
     { valueKey: 'fuelLcoe', color: '#facc15', label: 'Fuel' },
     { valueKey: 'omLcoe', color: '#4ade80', label: 'O&M' },
