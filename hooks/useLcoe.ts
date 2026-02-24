@@ -53,16 +53,16 @@ export function buildDfArray(
 ): Float64Array {
   const df = new Float64Array(usefulLife);
   const TL = usefulLife;
-  const L = Math.floor(TL / 3);
+  const L = Math.round(TL / 3);
 
   // Base nominal Ke (for construction offset and tranche 1)
   const baseKeNom = (1 + costOfEquityReal) * (1 + pi) - 1;
 
   const getOpW = (opYear: number): number => {
     // Declining REAL cost of equity, then Fisher to nominal.
-    // Guard: L must be > 0 to apply tranches (avoids immediate drop for TL < 3).
+    // Guard: TL must be >= 3 to have meaningful tranches.
     let keReal = costOfEquityReal;
-    if (declining && L > 0) {
+    if (declining && TL >= 3) {
       if (opYear > 2 * L) keReal = costOfEquityReal / 3;
       else if (opYear > L) keReal = costOfEquityReal * 2 / 3;
     }
