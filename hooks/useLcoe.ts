@@ -389,7 +389,6 @@ function computeTurnkeyLcoe(
   fvEconomicCOD: number,
   fvSurchargedCOD: number,
   occRatioCOD: number,
-  waccNom: number,
   declining: boolean,
 ): LcoeResult {
   const { usefulLife, constructionTime, fuelCost, omCost, loadHours, decommissioningCost, inflationRate } = inputs;
@@ -405,19 +404,20 @@ function computeTurnkeyLcoe(
   // worth fvSurchargedCOD (WACC-compounded to COD).
   const fvEconomicNetCOD = Math.max(0, fvEconomicCOD - fvSurchargedCOD);
 
-  // Paid in 3 mid-year tranches post-COD.
-  const nTranches = Math.min(3, TL);
-  let annuityFactor = 0;
-  for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNom, t - 0.5);
-  const annualPayment = annuityFactor > 0 ? fvEconomicNetCOD / annuityFactor : fvEconomicNetCOD;
-  const developerSalePrice = annualPayment * nTranches;
-
   // Buyer model: t=0 = COD, no construction-period discounting
   const { costOfDebtNom: kdNom } = calcNominalWacc(inputs);
   const keReal = inputs.costOfEquity / 100;
   const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
   const buyerDf = buildDfArray(keReal, kdNom, gearingFrac, pi, TL, declining, 0);
 
+  // Paid in 3 mid-year tranches post-COD.
+  // Annuity factor from buyerDf (not constant waccNom) ensures same discount
+  // curve for solving and valuing the payment — critical when declining=true.
+  const nTranches = Math.min(3, TL);
+  let annuityFactor = 0;
+  for (let k = 0; k < nTranches; k++) annuityFactor += buyerDf[k];
+  const annualPayment = annuityFactor > 0 ? fvEconomicNetCOD / annuityFactor : fvEconomicNetCOD;
+  const developerSalePrice = annualPayment * nTranches;
 
   // Decom sinking fund — SOC-real → nominal at end-of-life (Tc + TL from SOC)
   const decomFundRateReal = 0.01;
@@ -430,7 +430,7 @@ function computeTurnkeyLcoe(
   const baseFuelCost = fuelCost * annualMwh;
   const baseOmCost = omCost;
 
-  // PV of sale tranches (buyer pays net-of-RAB amount in years 1..nTranches)
+  // PV of sale tranches — same buyerDf used for annuity, so pvSaleTranches ≈ fvEconomicNetCOD
   let pvSaleTranches = 0;
   for (let k = 0; k < nTranches; k++) pvSaleTranches += annualPayment * buyerDf[k];
 
@@ -509,7 +509,7 @@ export const calculateLcoe = (
   if (turnkey) {
     return computeTurnkeyLcoe(
       inputs, constr.fvEconomicCOD, constr.fvSurchargedCOD,
-      constr.occRatioCOD, waccNomBlend, declining,
+      constr.occRatioCOD, declining,
     );
   }
 
