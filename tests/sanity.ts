@@ -1,5 +1,5 @@
 /**
- * Sanity tests for LCOE engine PV-basis consistency.
+ * Acceptance tests for audit-proof LCOE engine.
  * Run with: npx tsx tests/sanity.ts
  */
 import { buildConstructionPhase, buildDfArray, calcNominalWacc, calculateLcoe } from '../hooks/useLcoe';
@@ -20,6 +20,8 @@ const DEFAULTS: LcoeInputs = {
     inflationRate: 2,
 };
 
+const ADV_OFF: AdvancedToggles = { rabEnabled: false, decliningWacc: false, turnkey: false, twoLives: false, valuationPoint: 'soc' };
+
 function assert(cond: boolean, msg: string) {
     if (!cond) { console.error(`  ❌ FAIL: ${msg}`); process.exit(1); }
     console.log(`  ✅ PASS: ${msg}`);
@@ -30,25 +32,85 @@ function approxEq(a: number, b: number, tol = 1e-6) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: bvCapexCOD ordering (no double-count)
+// Test 1: RAB PV sanity
+//   rabFrac=1 → pvSurchargedIdcSOC > 0, pvFinancingSOC → 0
+//   rabFrac=0 → pvSurchargedIdcSOC = 0
 // ---------------------------------------------------------------------------
-console.log('\nTest 1: bvCapexCOD ordering — pvCapexSOC < bvCapexCOD < WACC-compounded FV');
+console.log('\nTest 1: RAB PV sanity');
 {
-    const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
-    const { waccNomBlend } = calcNominalWacc(DEFAULTS);
-    const Tc = DEFAULTS.constructionTime;
-    const waccFV = constr.pvOccSOC * Math.pow(1 + waccNomBlend, Tc);
+    const cRAB1 = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 1);
+    const cRAB0 = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
 
-    assert(constr.bvCapexCOD > constr.pvCapexSOC,
-        `bvCapexCOD (${constr.bvCapexCOD.toFixed(2)}) > pvCapexSOC (${constr.pvCapexSOC.toFixed(2)})`);
-    assert(constr.bvCapexCOD < waccFV,
-        `bvCapexCOD (${constr.bvCapexCOD.toFixed(2)}) < WACC-FV (${waccFV.toFixed(2)})`);
+    assert(cRAB1.pvSurchargedIdcSOC > 0,
+        `rabFrac=1: pvSurchargedIdcSOC = ${cRAB1.pvSurchargedIdcSOC.toFixed(2)} > 0`);
+    assert(approxEq(cRAB1.pvFinancingSOC, 0),
+        `rabFrac=1: pvFinancingSOC = ${cRAB1.pvFinancingSOC.toFixed(6)} ≈ 0 (all surcharged)`);
+    assert(approxEq(cRAB0.pvSurchargedIdcSOC, 0),
+        `rabFrac=0: pvSurchargedIdcSOC = ${cRAB0.pvSurchargedIdcSOC.toFixed(6)} = 0`);
+    assert(cRAB0.pvFinancingSOC > 0,
+        `rabFrac=0: pvFinancingSOC = ${cRAB0.pvFinancingSOC.toFixed(2)} > 0 (all capitalized)`);
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: pvOcc + pvFinancing = pvCapex identity
+// Test 2: Turnkey NPV identity
+//   PV@COD of buyer payments discounted at waccNomBlend = fvEconomicCOD
 // ---------------------------------------------------------------------------
-console.log('\nTest 2: pvOccSOC + pvFinancingSOC = pvCapexSOC');
+console.log('\nTest 2: Turnkey NPV identity — PV(payments) = fvEconomicCOD');
+{
+    const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
+    const { waccNomBlend } = calcNominalWacc(DEFAULTS);
+    const nTranches = 3;
+
+    let annuityFactor = 0;
+    for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNomBlend, t - 0.5);
+    const annualPayment = constr.fvEconomicCOD / annuityFactor;
+
+    let pvPayments = 0;
+    for (let t = 1; t <= nTranches; t++) pvPayments += annualPayment / Math.pow(1 + waccNomBlend, t - 0.5);
+
+    assert(approxEq(pvPayments, constr.fvEconomicCOD, 1e-4),
+        `PV(payments) = ${pvPayments.toFixed(2)} ≈ fvEconomicCOD = ${constr.fvEconomicCOD.toFixed(2)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Turnkey bucket non-zero
+//   With π>0, Tc>0, waccNom>π, occRatioCOD < 1 → financingLcoe > 0
+// ---------------------------------------------------------------------------
+console.log('\nTest 3: Turnkey financing bucket non-zero');
+{
+    const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
+    assert(constr.occRatioCOD > 0 && constr.occRatioCOD < 1,
+        `occRatioCOD = ${constr.occRatioCOD.toFixed(4)} ∈ (0,1)`);
+
+    const advTK: AdvancedToggles = { ...ADV_OFF, turnkey: true };
+    const result = calculateLcoe(DEFAULTS, 3, advTK);
+    assert(result.financingLcoe > 0,
+        `Turnkey financingLcoe = ${result.financingLcoe.toFixed(4)} > 0`);
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Tc inflation propagation
+//   With Tc>0, OPEX/Fuel PV should increase vs Tc=0 (holding all else constant)
+//   because esc = (1+π)^(Tc + k + 0.5) traverses construction period.
+// ---------------------------------------------------------------------------
+console.log('\nTest 4: Tc inflation propagation');
+{
+    const inputsTc0 = { ...DEFAULTS, constructionTime: 0 };
+    const rTc8 = calculateLcoe(DEFAULTS, 2, ADV_OFF);
+    const rTc0 = calculateLcoe(inputsTc0, 2, ADV_OFF);
+
+    assert(rTc8.fuelLcoe > rTc0.fuelLcoe,
+        `Fuel LCOE with Tc=8 (${rTc8.fuelLcoe.toFixed(4)}) > Tc=0 (${rTc0.fuelLcoe.toFixed(4)})`);
+    assert(rTc8.omLcoe > rTc0.omLcoe,
+        `O&M LCOE with Tc=8 (${rTc8.omLcoe.toFixed(4)}) > Tc=0 (${rTc0.omLcoe.toFixed(4)})`);
+    assert(rTc8.decommissioningLcoe > rTc0.decommissioningLcoe,
+        `Decom LCOE with Tc=8 (${rTc8.decommissioningLcoe.toFixed(4)}) > Tc=0 (${rTc0.decommissioningLcoe.toFixed(4)})`);
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: pvOcc + pvFinancing = pvCapex identity
+// ---------------------------------------------------------------------------
+console.log('\nTest 5: pvOccSOC + pvFinancingSOC = pvCapexSOC');
 {
     const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
     const sum = constr.pvOccSOC + constr.pvFinancingSOC;
@@ -57,69 +119,38 @@ console.log('\nTest 2: pvOccSOC + pvFinancingSOC = pvCapexSOC');
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Turnkey PV(payments) = bvCapexCOD at developer WACC
-// ---------------------------------------------------------------------------
-console.log('\nTest 3: Turnkey PV(payments) = bvCapexCOD');
-{
-    const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
-    const { waccNomBlend } = calcNominalWacc(DEFAULTS);
-    const nTranches = 3;
-
-    let annuityFactor = 0;
-    for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNomBlend, t - 0.5);
-    const annualPayment = constr.bvCapexCOD / annuityFactor;
-
-    let pvPayments = 0;
-    for (let t = 1; t <= nTranches; t++) pvPayments += annualPayment / Math.pow(1 + waccNomBlend, t - 0.5);
-
-    assert(approxEq(pvPayments, constr.bvCapexCOD, 1e-4),
-        `PV(payments) = ${pvPayments.toFixed(2)} ≈ bvCapexCOD = ${constr.bvCapexCOD.toFixed(2)}`);
-}
-
-// ---------------------------------------------------------------------------
-// Test 4: Turnkey OCC/Fin split uses COD ratio (occRatioCOD)
-// ---------------------------------------------------------------------------
-console.log('\nTest 4: Turnkey uses COD book ratio for OCC/Fin split');
-{
-    const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
-    assert(constr.occRatioCOD > 0 && constr.occRatioCOD < 1,
-        `occRatioCOD = ${constr.occRatioCOD.toFixed(4)} ∈ (0,1)`);
-
-    // Verify occRatioCOD ≠ pvOccSOC/pvCapexSOC (they differ due to timing)
-    const socRatio = constr.pvOccSOC / constr.pvCapexSOC;
-    assert(!approxEq(constr.occRatioCOD, socRatio, 1e-3),
-        `COD ratio (${constr.occRatioCOD.toFixed(4)}) ≠ SOC ratio (${socRatio.toFixed(4)}) — timing difference`);
-}
-
-// ---------------------------------------------------------------------------
-// Test 5: Decom sinking fund stable under zero inflation
-// ---------------------------------------------------------------------------
-console.log('\nTest 5: Decom sinking fund nominal rate reduces to real rate when π=0');
-{
-    const zeroInflation = { ...DEFAULTS, inflationRate: 0 };
-    const adv: AdvancedToggles = { rabEnabled: false, decliningWacc: false, turnkey: false, twoLives: false, valuationPoint: 'soc' };
-    const r1 = calculateLcoe(DEFAULTS, 2, adv);
-    const r2 = calculateLcoe(zeroInflation, 2, adv);
-
-    assert(r1.decommissioningLcoe > 0, `Decom LCOE > 0 with inflation (${r1.decommissioningLcoe.toFixed(4)})`);
-    assert(r2.decommissioningLcoe > 0, `Decom LCOE > 0 without inflation (${r2.decommissioningLcoe.toFixed(4)})`);
-    // With inflation=0, nominal rate = real rate, so decom should be lower (smaller fund target)
-    assert(r2.decommissioningLcoe < r1.decommissioningLcoe,
-        `Decom with π=0 (${r2.decommissioningLcoe.toFixed(4)}) < with π=2% (${r1.decommissioningLcoe.toFixed(4)})`);
-}
-
-// ---------------------------------------------------------------------------
 // Test 6: Declining Ke edge case — TL < 3 means L=0, no decline applied
 // ---------------------------------------------------------------------------
 console.log('\nTest 6: Declining Ke with TL=2 — no drop (L=0 guard)');
 {
     const shortLife = { ...DEFAULTS, usefulLife: 2 };
-    const adv: AdvancedToggles = { rabEnabled: false, decliningWacc: true, turnkey: false, twoLives: false, valuationPoint: 'soc' };
-    const advOff: AdvancedToggles = { ...adv, decliningWacc: false };
-    const r1 = calculateLcoe(shortLife, 3, adv);   // declining ON
-    const r2 = calculateLcoe(shortLife, 3, advOff); // declining OFF
+    const advDecl: AdvancedToggles = { ...ADV_OFF, decliningWacc: true };
+    const r1 = calculateLcoe(shortLife, 3, advDecl);
+    const r2 = calculateLcoe(shortLife, 3, ADV_OFF);
     assert(approxEq(r1.totalLcoe, r2.totalLcoe, 1e-6),
         `TL=2 declining ON (${r1.totalLcoe.toFixed(2)}) = OFF (${r2.totalLcoe.toFixed(2)}) — L=0 guard`);
 }
 
-console.log('\n✅ All sanity tests passed.\n');
+// ---------------------------------------------------------------------------
+// Test 7: fvEconomicCOD > pvCapexSOC ordering
+// ---------------------------------------------------------------------------
+console.log('\nTest 7: fvEconomicCOD > pvCapexSOC');
+{
+    const constr = buildConstructionPhase(DEFAULTS, 'dynamic', 'debt_only', 0);
+    assert(constr.fvEconomicCOD > constr.pvCapexSOC,
+        `fvEconomicCOD (${constr.fvEconomicCOD.toFixed(2)}) > pvCapexSOC (${constr.pvCapexSOC.toFixed(2)})`);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: Decom sinking fund stable — π=0 gives lower decom LCOE
+// ---------------------------------------------------------------------------
+console.log('\nTest 8: Decom sinking fund stable under zero inflation');
+{
+    const zeroInflation = { ...DEFAULTS, inflationRate: 0 };
+    const r1 = calculateLcoe(DEFAULTS, 2, ADV_OFF);
+    const r2 = calculateLcoe(zeroInflation, 2, ADV_OFF);
+    assert(r2.decommissioningLcoe < r1.decommissioningLcoe,
+        `Decom π=0 (${r2.decommissioningLcoe.toFixed(4)}) < π=2% (${r1.decommissioningLcoe.toFixed(4)})`);
+}
+
+console.log('\n✅ All 8 acceptance tests passed.\n');

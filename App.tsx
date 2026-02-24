@@ -150,7 +150,7 @@ const App: React.FC = () => {
     const Tc = Math.max(Math.round(inputs.constructionTime), 0);
     const TL = Math.max(Math.round(inputs.usefulLife), 0);
     const inflationMode = step === 1 ? 'lump_sum' : 'dynamic';
-    const idcMode = step === 1 ? 'whole_wacc' : 'debt_only';
+    const idcMode = step === 1 ? 'afudc_whole_wacc' : 'debt_only';
     const rabFrac = (step === 3 && adv.rabEnabled) ? 1.0 : 0;
     const declining = step === 3 && adv.decliningWacc;
     const tcOffset = Tc;
