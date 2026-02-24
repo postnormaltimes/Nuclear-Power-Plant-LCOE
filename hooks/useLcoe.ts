@@ -331,35 +331,68 @@ function computeCoreLcoe(
     };
   }
 
-  // ---------- 2-LIVES (PV-correct aggregation) ----------
-  const N1 = Math.ceil(TL / 2);
+  // ---------- 2-LIVES: LTE/LTO Extension (Interval Deconstruction) ----------
+  // Interval 1: years 1..TL (initial CAPEX recovery + opex)
+  // Interval 2: years TL+1..TL+20 (extension CapEx + opex, no initial debt)
+  // df[] must cover TL+20 years (built in calculateLcoe when twoLives=true).
+  const LTE = 20;
+  const TTotal = TL + LTE;
+  const { extensionCapEx } = inputs;
 
+  // Extension CapEx: SOC-real → nominal at start of extension (year Tc + TL)
+  // then discounted to SOC. Use the discount factor at exact end of year TL.
+  // df is indexed 0..TTotal-1 where df[k] discounts mid-year k+1 to SOC.
+  // Extension CapEx occurs at boundary year TL, so discount at (Tc + TL).
+  const { waccNomBlend } = calcNominalWacc(inputs);
+  const extCapExNominal = extensionCapEx * Math.pow(1 + pi, Tc + TL);
+  const dfExtCapex = 1 / Math.pow(1 + waccNomBlend, Tc + TL);
+  const pvExtCapexSOC = extCapExNominal * dfExtCapex;
+
+  // Decom for extension: nominal at Tc + TTotal, sinking fund over LTE years
+  const futureDecomExt = decommissioningCost * Math.pow(1 + pi, Tc + TTotal);
+  const annualDecomExt = decomFundRateNom > 0 && LTE > 0
+    ? futureDecomExt * (decomFundRateNom / (Math.pow(1 + decomFundRateNom, LTE) - 1))
+    : (LTE > 0 ? futureDecomExt / LTE : 0);
+
+  // Interval 1: years 0..TL-1
   let pvE1 = 0, pvO1 = 0, pvF1 = 0, pvD1 = 0;
-  let pvE2 = 0, pvO2 = 0, pvF2 = 0, pvD2 = 0;
-
   for (let k = 0; k < TL; k++) {
     const d = df[k];
     const esc = Math.pow(1 + pi, Tc + k + 0.5);
-    const e = annualMwh * d;
-    const o = baseOmCost * esc * d;
-    const f = baseFuelCost * esc * d;
-    const dc = annualDecom * d;
-    if (k < N1) { pvE1 += e; pvO1 += o; pvF1 += f; pvD1 += dc; }
-    else { pvE2 += e; pvO2 += o; pvF2 += f; pvD2 += dc; }
+    pvE1 += annualMwh * d;
+    pvO1 += baseOmCost * esc * d;
+    pvF1 += baseFuelCost * esc * d;
+    pvD1 += annualDecom * d;
+  }
+
+  // Interval 2: years TL..TL+LTE-1
+  let pvE2 = 0, pvO2 = 0, pvF2 = 0, pvD2 = 0;
+  for (let k = TL; k < TTotal; k++) {
+    const d = df[k];
+    const esc = Math.pow(1 + pi, Tc + k + 0.5);
+    pvE2 += annualMwh * d;
+    pvO2 += baseOmCost * esc * d;
+    pvF2 += baseFuelCost * esc * d;
+    pvD2 += annualDecomExt * d;
   }
 
   const pvEnergyTotal = pvE1 + pvE2;
   if (pvEnergyTotal <= 0) return zero;
 
-  const pvOpexTotal = (pvO1 + pvO2) + (pvF1 + pvF2) + (pvD1 + pvD2);
-  const totalLcoe = (pvOccSOC + pvFinancingSOC + pvOpexTotal) / pvEnergyTotal;
+  // Interval costs
+  const pvCost1 = pvOccSOC + pvFinancingSOC + pvO1 + pvF1 + pvD1;
+  const pvCost2 = pvExtCapexSOC + pvO2 + pvF2 + pvD2;
+  const totalLcoe = (pvCost1 + pvCost2) / pvEnergyTotal;
 
-  const halfLcoe1 = pvE1 > 0 ? (pvOccSOC + pvFinancingSOC + pvO1 + pvF1 + pvD1) / pvE1 : 0;
-  const halfLcoe2 = pvE2 > 0 ? (pvO2 + pvF2 + pvD2) / pvE2 : 0;
+  const halfLcoe1 = pvE1 > 0 ? pvCost1 / pvE1 : 0;
+  const halfLcoe2 = pvE2 > 0 ? pvCost2 / pvE2 : 0;
+
+  // OCC = initial + extension capex
+  const pvOccTotal = pvOccSOC + pvExtCapexSOC;
 
   return {
     totalLcoe,
-    occLcoe: pvOccSOC / pvEnergyTotal,
+    occLcoe: pvOccTotal / pvEnergyTotal,
     financingLcoe: pvFinancingSOC / pvEnergyTotal,
     fuelLcoe: (pvF1 + pvF2) / pvEnergyTotal,
     omLcoe: (pvO1 + pvO2) / pvEnergyTotal,
@@ -503,7 +536,9 @@ export const calculateLcoe = (
   const costOfEquityReal = inputs.costOfEquity / 100;
   const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
   const piRate = inputs.inflationRate / 100;
-  const df = precomputed?.df ?? buildDfArray(costOfEquityReal, costOfDebtNom, gearingFrac, piRate, TL, declining, tcOffset);
+  // When twoLives, extend df array to TL + 20 for LTE interval
+  const dfLen = twoLives ? TL + 20 : TL;
+  const df = precomputed?.df ?? buildDfArray(costOfEquityReal, costOfDebtNom, gearingFrac, piRate, dfLen, declining, tcOffset);
 
   // --- Turnkey mode ---
   if (turnkey) {

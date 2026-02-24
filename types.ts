@@ -17,6 +17,8 @@ export interface LcoeInputs {
   rabProportion: number;
   /** Annual inflation rate in percent (e.g. 2 = 2 %) for JRC-adjusted nominal capital draws and OPEX escalation. */
   inflationRate: number;
+  /** Real overnight CapEx for 20-year Life Extension (LTE/LTO), SOC currency ($/kW). */
+  extensionCapEx: number;
 }
 
 export interface LcoeResult {
@@ -28,9 +30,9 @@ export interface LcoeResult {
   decommissioningLcoe: number;
   /** Consumer surcharge from RAB interest payments, expressed as $/MWh (optional). */
   surchargedIdcLcoe?: number;
-  /** Half 1 LCOE (double-life mode only): capex fully recovered in first half. */
+  /** Interval 1 LCOE (2-Lives: years 1..TL with initial CAPEX). */
   halfLcoe1?: number;
-  /** Half 2 LCOE (double-life mode only): fully depreciated, opex only. */
+  /** Interval 2 LCOE (2-Lives: years TL+1..TL+20, extension CAPEX only). */
   halfLcoe2?: number;
   /** Developer sale price in Turnkey mode ($/kW). */
   developerSalePrice?: number;
@@ -51,7 +53,7 @@ export interface AdvancedToggles {
   decliningWacc: boolean;
   /** Turnkey: developer sells at COD, buyer computes LCOE from sale price. */
   turnkey: boolean;
-  /** 2-Lives: simple average of two half-LCOEs. */
+  /** 2-Lives: adds 20-year LTE/LTO with extension CAPEX. */
   twoLives: boolean;
   /** SOC vs COD valuation point (affects all steps). */
   valuationPoint: 'soc' | 'cod';

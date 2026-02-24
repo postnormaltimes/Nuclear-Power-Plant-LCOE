@@ -32,6 +32,7 @@ const PARAM_CONFIGS: Record<keyof LcoeInputs, ParamConfig> = {
   decommissioningCost: { label: 'Decommissioning Costs', min: 300, max: 3000, step: 50, unit: '$/kW', formatter: (v) => formatCurrency(v).replace('.00', ''), chartFormatter: (v) => formatNumber(v) },
   rabProportion: { label: 'RAB Consumer Burden', min: 0, max: 100, step: 1, unit: '%', formatter: (v) => `${v}%`, chartFormatter: (v) => `${v}%` },
   inflationRate: { label: 'Inflation Rate', min: 0, max: 10, step: 0.1, unit: '%', formatter: (v) => `${v.toFixed(1)}%`, chartFormatter: (v) => `${v.toFixed(1)}%` },
+  extensionCapEx: { label: 'Extension CapEx (LTE)', min: 0, max: 5000, step: 100, unit: '$/kW', formatter: (v) => formatCurrency(v).replace('.00', ''), chartFormatter: (v) => formatNumber(v) },
 };
 
 // Step descriptions for pedagogical flow
@@ -85,6 +86,7 @@ const App: React.FC = () => {
     decommissioningCost: 1000,
     rabProportion: 50,
     inflationRate: 2,
+    extensionCapEx: 1000,
   });
 
   // 3-step state
@@ -220,6 +222,8 @@ const App: React.FC = () => {
             {Object.entries(PARAM_CONFIGS).map(([key, config]) => {
               // RAB Consumer Burden slider no longer needed (RAB covers 100% IDC)
               if (key === 'rabProportion') return null;
+              // Extension CapEx only visible when 2-Lives is active
+              if (key === 'extensionCapEx' && !(step === 3 && adv.twoLives)) return null;
               return (
                 <SliderInput key={key}
                   label={config.label}
@@ -279,7 +283,7 @@ const App: React.FC = () => {
                   <Toggle label="Asset Life Treatment"
                     options={[{ key: 'off', label: 'Single Life' }, { key: 'on', label: '2-Lives' }]}
                     value={adv.twoLives ? 'on' : 'off'} onChange={advToggle('twoLives')}
-                    desc="2-Lives: CAPEX recovered in first half. Second half fully depreciated. Final LCOE = simple average."
+                    desc="2-Lives: adds 20-year LTE/LTO with extension CapEx. Interval 1 recovers initial CAPEX; Interval 2 = extension only."
                   />
                 </div>
               )}
