@@ -271,10 +271,8 @@ export function buildConstructionPhase(
 // Operational costs escalated by (1+π)^(Tc + k + 0.5) to account for
 // inflation from SOC through construction into each operational year.
 //
-// RAB repayment: when pvSurchargedIdcSOC > 0, the owner must repay the
-// construction-period surcharges post-COD via a level annuity over
-// min(30, TL) years. The PV@SOC of this repayment stream equals
-// pvSurchargedIdcSOC. This repayment appears in the financing bucket.
+// RAB effect: surcharges reduce pvFinancingSOC (capitalized IDC is lower).
+// pvSurchargedIdcSOC is kept as a memo line only (not added to total).
 //
 // All inputs are PV-at-SOC consistent:
 //   pvOccSOC, pvFinancingSOC = PV at SOC of construction components
@@ -296,17 +294,6 @@ function computeCoreLcoe(
   const zero: LcoeResult = { totalLcoe: 0, occLcoe: 0, financingLcoe: 0, fuelLcoe: 0, omLcoe: 0, decommissioningLcoe: 0, surchargedIdcLcoe: 0 };
   if (annualMwh <= 0 || TL <= 0) return zero;
 
-  // RAB post-COD repayment: amortize pvSurchargedIdcSOC over min(30, TL) years
-  // using a level annuity whose PV@SOC = pvSurchargedIdcSOC.
-  const repayYears = Math.min(30, TL);
-  let pvRepaySOC = 0;
-  if (pvSurchargedIdcSOC > 0) {
-    let annFactorSOC = 0;
-    for (let k = 0; k < repayYears; k++) annFactorSOC += df[k];
-    const annualRepay = annFactorSOC > 0 ? pvSurchargedIdcSOC / annFactorSOC : pvSurchargedIdcSOC;
-    pvRepaySOC = annualRepay * annFactorSOC; // ≈ pvSurchargedIdcSOC
-  }
-
   // Decom sinking fund — rate is REAL, Fisher-convert to nominal.
   // SOC-real decom cost → nominal at end-of-life (Tc + TL from SOC).
   const decomFundRateReal = 0.01;
@@ -318,9 +305,6 @@ function computeCoreLcoe(
 
   const baseFuelCost = fuelCost * annualMwh;
   const baseOmCost = omCost;
-
-  // Total financing = capitalized IDC PV + RAB repayment PV (owner owes both)
-  const totalFinancingPv = pvFinancingSOC + pvRepaySOC;
 
   if (!twoLives) {
     // ---------- SINGLE LIFE ----------
@@ -335,11 +319,11 @@ function computeCoreLcoe(
       pvDecom += annualDecom * d;
     }
     if (pvEnergy <= 0) return zero;
-    const totalPvCost = pvOccSOC + totalFinancingPv + pvOm + pvFuel + pvDecom;
+    const totalPvCost = pvOccSOC + pvFinancingSOC + pvOm + pvFuel + pvDecom;
     return {
       totalLcoe: totalPvCost / pvEnergy,
       occLcoe: pvOccSOC / pvEnergy,
-      financingLcoe: totalFinancingPv / pvEnergy,
+      financingLcoe: pvFinancingSOC / pvEnergy,
       fuelLcoe: pvFuel / pvEnergy,
       omLcoe: pvOm / pvEnergy,
       decommissioningLcoe: pvDecom / pvEnergy,
@@ -368,15 +352,15 @@ function computeCoreLcoe(
   if (pvEnergyTotal <= 0) return zero;
 
   const pvOpexTotal = (pvO1 + pvO2) + (pvF1 + pvF2) + (pvD1 + pvD2);
-  const totalLcoe = (pvOccSOC + totalFinancingPv + pvOpexTotal) / pvEnergyTotal;
+  const totalLcoe = (pvOccSOC + pvFinancingSOC + pvOpexTotal) / pvEnergyTotal;
 
-  const halfLcoe1 = pvE1 > 0 ? (pvOccSOC + totalFinancingPv + pvO1 + pvF1 + pvD1) / pvE1 : 0;
+  const halfLcoe1 = pvE1 > 0 ? (pvOccSOC + pvFinancingSOC + pvO1 + pvF1 + pvD1) / pvE1 : 0;
   const halfLcoe2 = pvE2 > 0 ? (pvO2 + pvF2 + pvD2) / pvE2 : 0;
 
   return {
     totalLcoe,
     occLcoe: pvOccSOC / pvEnergyTotal,
-    financingLcoe: totalFinancingPv / pvEnergyTotal,
+    financingLcoe: pvFinancingSOC / pvEnergyTotal,
     fuelLcoe: (pvF1 + pvF2) / pvEnergyTotal,
     omLcoe: (pvO1 + pvO2) / pvEnergyTotal,
     decommissioningLcoe: (pvD1 + pvD2) / pvEnergyTotal,
@@ -396,9 +380,9 @@ function computeCoreLcoe(
 //   Payment in 3 mid-year tranches post-COD.
 //
 // Buyer model: t=0 = COD, pays 3 tranches then operates.
-//   Additionally repays fvSurchargedCOD over min(30, TL) years.
-//   LCOE = PV(sale tranches + RAB repayment + opex) / PV(MWh).
-//   Financing includes sale-tranche carry uplift + RAB repayment.
+//   LCOE = PV(sale tranches + opex) / PV(MWh) from buyer's perspective.
+//   OCC invariant: occRatioNet = fvOccBookCOD / fvEconomicNetCOD.
+//   RAB permanently reduces financing (no post-COD repayment).
 // ---------------------------------------------------------------------------
 function computeTurnkeyLcoe(
   inputs: LcoeInputs,
@@ -434,15 +418,6 @@ function computeTurnkeyLcoe(
   const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
   const buyerDf = buildDfArray(keReal, kdNom, gearingFrac, pi, TL, declining, 0);
 
-  // RAB post-COD repayment: buyer repays fvSurchargedCOD over min(30, TL) years
-  const repayYears = Math.min(30, TL);
-  let pvRepayCOD = 0;
-  if (fvSurchargedCOD > 0) {
-    let annFactorCOD = 0;
-    for (let k = 0; k < repayYears; k++) annFactorCOD += buyerDf[k];
-    const annualRepay = annFactorCOD > 0 ? fvSurchargedCOD / annFactorCOD : fvSurchargedCOD;
-    pvRepayCOD = annualRepay * annFactorCOD; // ≈ fvSurchargedCOD
-  }
 
   // Decom sinking fund — SOC-real → nominal at end-of-life (Tc + TL from SOC)
   const decomFundRateReal = 0.01;
@@ -472,20 +447,22 @@ function computeTurnkeyLcoe(
 
   if (pvEnergy <= 0) return zero;
 
-  // Decompose sale payments using Economic Turnkey COD ratio.
-  // OCC = inflation-only book cost share, Financing = WACC carry uplift share.
-  const pvOcc = pvSaleTranches * occRatioCOD;
-  const pvSaleFinancing = pvSaleTranches * (1 - occRatioCOD);
+  // OCC-invariant decomposition: derive fvOccBookCOD from occRatioCOD.
+  // occRatioCOD = fvOccBookCOD / fvEconomicCOD (set in buildConstructionPhase).
+  // occRatioNet = fvOccBookCOD / fvEconomicNetCOD.
+  // Since pvSaleTranches / fvEconomicNetCOD = constant (annuity ratio),
+  // pvOcc = pvSaleTranches * occRatioNet is invariant under RAB.
+  const fvOccBookCOD = occRatioCOD * fvEconomicCOD;
+  const occRatioNet = fvEconomicNetCOD > 0 ? Math.min(fvOccBookCOD / fvEconomicNetCOD, 1) : 1;
+  const pvOcc = pvSaleTranches * occRatioNet;
+  const pvFinancing = pvSaleTranches * (1 - occRatioNet);
 
-  // Total financing = sale carry uplift + RAB post-COD repayment
-  const pvFinancingTotal = pvSaleFinancing + pvRepayCOD;
-
-  // Total cost = sale tranches (net of RAB) + RAB repayment + operating costs
-  const totalPvCost = pvSaleTranches + pvRepayCOD + pvOm + pvFuel + pvDecom;
+  // Total cost = sale tranches (net of RAB) + operating costs. No post-COD repayment.
+  const totalPvCost = pvSaleTranches + pvOm + pvFuel + pvDecom;
   return {
     totalLcoe: totalPvCost / pvEnergy,
     occLcoe: pvOcc / pvEnergy,
-    financingLcoe: pvFinancingTotal / pvEnergy,
+    financingLcoe: pvFinancing / pvEnergy,
     fuelLcoe: pvFuel / pvEnergy,
     omLcoe: pvOm / pvEnergy,
     decommissioningLcoe: pvDecom / pvEnergy,
