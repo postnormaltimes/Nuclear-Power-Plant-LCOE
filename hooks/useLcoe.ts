@@ -147,7 +147,7 @@ export function buildConstructionPhase(
 ): ConstructionResult {
   const { overnightCost, constructionTime, inflationRate } = inputs;
 
-  const Tc = Math.max(constructionTime, 0);
+  const Tc = Math.max(0, Math.round(constructionTime));
   if (Tc === 0) return {
     pvOccSOC: overnightCost,
     pvFinancingSOC: 0,
