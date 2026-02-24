@@ -115,7 +115,7 @@ export interface ConstructionResult {
   /** Economic FV at COD of construction-period surcharges.
    *  = Σ surchargeNom[t] × (1+wacc)^(Tc − t − 0.5).
    *  Used for (i) netting in turnkey pricing, (ii) post-COD repayment liability. */
-  fvSurchargedCOD: number;
+  fvSurchargeInflowCOD: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +136,7 @@ export interface ConstructionResult {
 //   'debt_only' (Step 2+):       interest only on debt tranche at Kd_nom
 //
 // RAB model: surcharges collected during construction are temporary prepayments.
-//   fvSurchargedCOD = WACC-compounded FV of surcharges at COD.
+//   fvSurchargeInflowCOD = WACC-compounded FV of surcharges at COD.
 //   Post-COD, the plant owner must repay this liability via a level annuity.
 // ---------------------------------------------------------------------------
 export function buildConstructionPhase(
@@ -155,7 +155,7 @@ export function buildConstructionPhase(
     fvEconomicCOD: overnightCost,
     occRatioCOD: 1,
     pvSurchargedIdcSOC: 0,
-    fvSurchargedCOD: 0,
+    fvSurchargeInflowCOD: 0,
   };
 
   const pi = inflationRate / 100;
@@ -187,7 +187,7 @@ export function buildConstructionPhase(
 
   // PV@SOC of surcharges (RAB memo line) + FV@COD of surcharges (RAB liability)
   let pvSurchargedIdcSOC = 0;
-  let fvSurchargedCOD = 0;
+  let fvSurchargeInflowCOD = 0;
 
   if (idcMode === 'afudc_whole_wacc') {
     // AFUDC proxy: carrying cost on whole capital at WACC
@@ -202,7 +202,7 @@ export function buildConstructionPhase(
 
       // FV@COD of surcharge: same timing, WACC-compounded to COD
       const compWacc = Math.pow(1 + waccNomBlend, Tc - (t + 0.5));
-      fvSurchargedCOD += surcharged * compWacc;
+      fvSurchargeInflowCOD += surcharged * compWacc;
 
       capIdcPerYear[t] = capitalized;
       K += cNom[t] + capitalized;
@@ -219,7 +219,7 @@ export function buildConstructionPhase(
       pvSurchargedIdcSOC += surcharged * dfSoc;
 
       const compWacc = Math.pow(1 + waccNomBlend, Tc - (t + 0.5));
-      fvSurchargedCOD += surcharged * compWacc;
+      fvSurchargeInflowCOD += surcharged * compWacc;
 
       capIdcPerYear[t] = capitalized;
       D += cNom[t] * gearing + capitalized;
@@ -260,7 +260,7 @@ export function buildConstructionPhase(
   return {
     pvOccSOC, pvFinancingSOC, pvCapexSOC,
     fvEconomicCOD, occRatioCOD,
-    pvSurchargedIdcSOC, fvSurchargedCOD,
+    pvSurchargedIdcSOC, fvSurchargeInflowCOD,
   };
 }
 
@@ -409,7 +409,7 @@ function computeCoreLcoe(
 // Developer model: builds the plant, sells at COD.
 //   fvEconomicCOD = Σ cNom[t] × (1+wacc)^(Tc−t−0.5).
 //   Under RAB, developer receives surcharges during construction.
-//   Net COD recovery = max(0, fvEconomicCOD − fvSurchargedCOD).
+//   Net COD recovery = max(0, fvEconomicCOD − fvSurchargeInflowCOD).
 //   Payment in 3 mid-year tranches post-COD.
 //
 // Buyer model: t=0 = COD, pays 3 tranches then operates.
@@ -420,7 +420,7 @@ function computeCoreLcoe(
 function computeTurnkeyLcoe(
   inputs: LcoeInputs,
   fvEconomicCOD: number,
-  fvSurchargedCOD: number,
+  fvSurchargeInflowCOD: number,
   occRatioCOD: number,
   declining: boolean,
 ): LcoeResult {
@@ -434,8 +434,8 @@ function computeTurnkeyLcoe(
 
   // Developer sale price: net of RAB surcharge inflows during construction.
   // Developer requires fvEconomicCOD at COD but already received surcharges
-  // worth fvSurchargedCOD (WACC-compounded to COD).
-  const fvEconomicNetCOD = Math.max(0, fvEconomicCOD - fvSurchargedCOD);
+  // worth fvSurchargeInflowCOD (WACC-compounded to COD).
+  const fvEconomicNetCOD = Math.max(0, fvEconomicCOD - fvSurchargeInflowCOD);
 
   // Buyer model: t=0 = COD, no construction-period discounting
   const { costOfDebtNom: kdNom } = calcNominalWacc(inputs);
@@ -543,7 +543,7 @@ export const calculateLcoe = (
   // --- Turnkey mode ---
   if (turnkey) {
     return computeTurnkeyLcoe(
-      inputs, constr.fvEconomicCOD, constr.fvSurchargedCOD,
+      inputs, constr.fvEconomicCOD, constr.fvSurchargeInflowCOD,
       constr.occRatioCOD, declining,
     );
   }
