@@ -109,15 +109,21 @@ export interface ConstructionResult {
    *  Financing bucket = WACC uplift over pure inflation. */
   occRatioCOD: number;
 
-  /** PV at SOC of surcharged carrying costs (RAB). */
+  /** PV at SOC of surcharged carrying costs (RAB). Memo line. */
   pvSurchargedIdcSOC: number;
+
+  /** Economic FV at COD of construction-period surcharges.
+   *  = Σ surchargeNom[t] × (1+wacc)^(Tc − t − 0.5).
+   *  Used for (i) netting in turnkey pricing, (ii) post-COD repayment liability. */
+  fvSurchargedCOD: number;
 }
 
 // ---------------------------------------------------------------------------
 // Phases A + B: Construction cost build-up and capitalized financing.
 //
-// Returns PV-at-SOC components (consistent with df[tcOffset=Tc])
-// and Economic FV-at-COD (for turnkey developer pricing).
+// Returns PV-at-SOC components (consistent with df[tcOffset=Tc]),
+// Economic FV-at-COD (for turnkey developer pricing),
+// and FV-at-COD of surcharges (for RAB post-COD repayment).
 //
 // Model Contract: All cost inputs are real SOC-year currency.
 //
@@ -128,6 +134,10 @@ export interface ConstructionResult {
 // idcMode:
 //   'afudc_whole_wacc' (Step 1): AFUDC proxy — carrying cost on whole capital
 //   'debt_only' (Step 2+):       interest only on debt tranche at Kd_nom
+//
+// RAB model: surcharges collected during construction are temporary prepayments.
+//   fvSurchargedCOD = WACC-compounded FV of surcharges at COD.
+//   Post-COD, the plant owner must repay this liability via a level annuity.
 // ---------------------------------------------------------------------------
 export function buildConstructionPhase(
   inputs: LcoeInputs,
@@ -145,6 +155,7 @@ export function buildConstructionPhase(
     fvEconomicCOD: overnightCost,
     occRatioCOD: 1,
     pvSurchargedIdcSOC: 0,
+    fvSurchargedCOD: 0,
   };
 
   const pi = inflationRate / 100;
@@ -171,11 +182,12 @@ export function buildConstructionPhase(
     }
   }
 
-  // Phase B: Capitalized financing during construction
+  // Phase B: Capitalized financing during construction + RAB surcharge tracking
   const capIdcPerYear = new Float64Array(Tc);
 
-  // PV@SOC of surcharges (RAB) — discounted, not raw sum
+  // PV@SOC of surcharges (RAB memo line) + FV@COD of surcharges (RAB liability)
   let pvSurchargedIdcSOC = 0;
+  let fvSurchargedCOD = 0;
 
   if (idcMode === 'afudc_whole_wacc') {
     // AFUDC proxy: carrying cost on whole capital at WACC
@@ -187,6 +199,10 @@ export function buildConstructionPhase(
 
       const dfSoc = 1 / Math.pow(1 + waccNomBlend, t + 0.5);
       pvSurchargedIdcSOC += surcharged * dfSoc;
+
+      // FV@COD of surcharge: same timing, WACC-compounded to COD
+      const compWacc = Math.pow(1 + waccNomBlend, Tc - (t + 0.5));
+      fvSurchargedCOD += surcharged * compWacc;
 
       capIdcPerYear[t] = capitalized;
       K += cNom[t] + capitalized;
@@ -201,6 +217,9 @@ export function buildConstructionPhase(
 
       const dfSoc = 1 / Math.pow(1 + waccNomBlend, t + 0.5);
       pvSurchargedIdcSOC += surcharged * dfSoc;
+
+      const compWacc = Math.pow(1 + waccNomBlend, Tc - (t + 0.5));
+      fvSurchargedCOD += surcharged * compWacc;
 
       capIdcPerYear[t] = capitalized;
       D += cNom[t] * gearing + capitalized;
@@ -238,7 +257,11 @@ export function buildConstructionPhase(
   // Turnkey decomposition: OCC = COD-book (inflation-only), Financing = WACC uplift
   const occRatioCOD = fvEconomicCOD > 0 ? fvOccBookCOD / fvEconomicCOD : 1;
 
-  return { pvOccSOC, pvFinancingSOC, pvCapexSOC, fvEconomicCOD, occRatioCOD, pvSurchargedIdcSOC };
+  return {
+    pvOccSOC, pvFinancingSOC, pvCapexSOC,
+    fvEconomicCOD, occRatioCOD,
+    pvSurchargedIdcSOC, fvSurchargedCOD,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +270,11 @@ export function buildConstructionPhase(
 // Model Contract: All cost inputs are real SOC-year currency.
 // Operational costs escalated by (1+π)^(Tc + k + 0.5) to account for
 // inflation from SOC through construction into each operational year.
+//
+// RAB repayment: when pvSurchargedIdcSOC > 0, the owner must repay the
+// construction-period surcharges post-COD via a level annuity over
+// min(30, TL) years. The PV@SOC of this repayment stream equals
+// pvSurchargedIdcSOC. This repayment appears in the financing bucket.
 //
 // All inputs are PV-at-SOC consistent:
 //   pvOccSOC, pvFinancingSOC = PV at SOC of construction components
@@ -268,6 +296,17 @@ function computeCoreLcoe(
   const zero: LcoeResult = { totalLcoe: 0, occLcoe: 0, financingLcoe: 0, fuelLcoe: 0, omLcoe: 0, decommissioningLcoe: 0, surchargedIdcLcoe: 0 };
   if (annualMwh <= 0 || TL <= 0) return zero;
 
+  // RAB post-COD repayment: amortize pvSurchargedIdcSOC over min(30, TL) years
+  // using a level annuity whose PV@SOC = pvSurchargedIdcSOC.
+  const repayYears = Math.min(30, TL);
+  let pvRepaySOC = 0;
+  if (pvSurchargedIdcSOC > 0) {
+    let annFactorSOC = 0;
+    for (let k = 0; k < repayYears; k++) annFactorSOC += df[k];
+    const annualRepay = annFactorSOC > 0 ? pvSurchargedIdcSOC / annFactorSOC : pvSurchargedIdcSOC;
+    pvRepaySOC = annualRepay * annFactorSOC; // ≈ pvSurchargedIdcSOC
+  }
+
   // Decom sinking fund — rate is REAL, Fisher-convert to nominal.
   // SOC-real decom cost → nominal at end-of-life (Tc + TL from SOC).
   const decomFundRateReal = 0.01;
@@ -279,6 +318,9 @@ function computeCoreLcoe(
 
   const baseFuelCost = fuelCost * annualMwh;
   const baseOmCost = omCost;
+
+  // Total financing = capitalized IDC PV + RAB repayment PV (owner owes both)
+  const totalFinancingPv = pvFinancingSOC + pvRepaySOC;
 
   if (!twoLives) {
     // ---------- SINGLE LIFE ----------
@@ -293,11 +335,11 @@ function computeCoreLcoe(
       pvDecom += annualDecom * d;
     }
     if (pvEnergy <= 0) return zero;
-    const totalPvCost = pvOccSOC + pvFinancingSOC + pvOm + pvFuel + pvDecom;
+    const totalPvCost = pvOccSOC + totalFinancingPv + pvOm + pvFuel + pvDecom;
     return {
       totalLcoe: totalPvCost / pvEnergy,
       occLcoe: pvOccSOC / pvEnergy,
-      financingLcoe: pvFinancingSOC / pvEnergy,
+      financingLcoe: totalFinancingPv / pvEnergy,
       fuelLcoe: pvFuel / pvEnergy,
       omLcoe: pvOm / pvEnergy,
       decommissioningLcoe: pvDecom / pvEnergy,
@@ -326,15 +368,15 @@ function computeCoreLcoe(
   if (pvEnergyTotal <= 0) return zero;
 
   const pvOpexTotal = (pvO1 + pvO2) + (pvF1 + pvF2) + (pvD1 + pvD2);
-  const totalLcoe = (pvOccSOC + pvFinancingSOC + pvOpexTotal) / pvEnergyTotal;
+  const totalLcoe = (pvOccSOC + totalFinancingPv + pvOpexTotal) / pvEnergyTotal;
 
-  const halfLcoe1 = pvE1 > 0 ? (pvOccSOC + pvFinancingSOC + pvO1 + pvF1 + pvD1) / pvE1 : 0;
+  const halfLcoe1 = pvE1 > 0 ? (pvOccSOC + totalFinancingPv + pvO1 + pvF1 + pvD1) / pvE1 : 0;
   const halfLcoe2 = pvE2 > 0 ? (pvO2 + pvF2 + pvD2) / pvE2 : 0;
 
   return {
     totalLcoe,
     occLcoe: pvOccSOC / pvEnergyTotal,
-    financingLcoe: pvFinancingSOC / pvEnergyTotal,
+    financingLcoe: totalFinancingPv / pvEnergyTotal,
     fuelLcoe: (pvF1 + pvF2) / pvEnergyTotal,
     omLcoe: (pvO1 + pvO2) / pvEnergyTotal,
     decommissioningLcoe: (pvD1 + pvD2) / pvEnergyTotal,
@@ -345,23 +387,23 @@ function computeCoreLcoe(
 }
 
 // ---------------------------------------------------------------------------
-// Economic Turnkey model.
+// Economic Turnkey model with RAB support.
 //
 // Developer model: builds the plant, sells at COD.
-//   Required COD recovery = Economic FV at COD (fvEconomicCOD).
 //   fvEconomicCOD = Σ cNom[t] × (1+wacc)^(Tc−t−0.5).
-//   NPV=0 at SOC: developer's WACC hurdle met on all deployed capital.
+//   Under RAB, developer receives surcharges during construction.
+//   Net COD recovery = max(0, fvEconomicCOD − fvSurchargedCOD).
 //   Payment in 3 mid-year tranches post-COD.
 //
 // Buyer model: t=0 = COD, pays 3 tranches then operates.
-//   LCOE = PV(sale tranches + opex) / PV(MWh) from buyer's perspective.
-//   OCC/Financing decomposition: occRatioCOD = fvOccBookCOD / fvEconomicCOD
-//     where fvOccBookCOD is inflation-only compounded. Financing bucket
-//     represents WACC uplift over pure inflation (construction-period carry).
+//   Additionally repays fvSurchargedCOD over min(30, TL) years.
+//   LCOE = PV(sale tranches + RAB repayment + opex) / PV(MWh).
+//   Financing includes sale-tranche carry uplift + RAB repayment.
 // ---------------------------------------------------------------------------
 function computeTurnkeyLcoe(
   inputs: LcoeInputs,
   fvEconomicCOD: number,
+  fvSurchargedCOD: number,
   occRatioCOD: number,
   waccNom: number,
   declining: boolean,
@@ -374,13 +416,16 @@ function computeTurnkeyLcoe(
   const zero: LcoeResult = { totalLcoe: 0, occLcoe: 0, financingLcoe: 0, fuelLcoe: 0, omLcoe: 0, decommissioningLcoe: 0, surchargedIdcLcoe: 0 };
   if (annualMwh <= 0 || TL <= 0) return zero;
 
-  // Developer sale price: developer requires fvEconomicCOD at COD.
+  // Developer sale price: net of RAB surcharge inflows during construction.
+  // Developer requires fvEconomicCOD at COD but already received surcharges
+  // worth fvSurchargedCOD (WACC-compounded to COD).
+  const fvEconomicNetCOD = Math.max(0, fvEconomicCOD - fvSurchargedCOD);
+
   // Paid in 3 mid-year tranches post-COD.
-  // P_annual × Σ(1/(1+w)^(t−0.5), t=1..3) = fvEconomicCOD
   const nTranches = Math.min(3, TL);
   let annuityFactor = 0;
   for (let t = 1; t <= nTranches; t++) annuityFactor += 1 / Math.pow(1 + waccNom, t - 0.5);
-  const annualPayment = annuityFactor > 0 ? fvEconomicCOD / annuityFactor : fvEconomicCOD;
+  const annualPayment = annuityFactor > 0 ? fvEconomicNetCOD / annuityFactor : fvEconomicNetCOD;
   const developerSalePrice = annualPayment * nTranches;
 
   // Buyer model: t=0 = COD, no construction-period discounting
@@ -388,6 +433,16 @@ function computeTurnkeyLcoe(
   const keReal = inputs.costOfEquity / 100;
   const gearingFrac = Math.min(Math.max(inputs.targetGearing, 0), 100) / 100;
   const buyerDf = buildDfArray(keReal, kdNom, gearingFrac, pi, TL, declining, 0);
+
+  // RAB post-COD repayment: buyer repays fvSurchargedCOD over min(30, TL) years
+  const repayYears = Math.min(30, TL);
+  let pvRepayCOD = 0;
+  if (fvSurchargedCOD > 0) {
+    let annFactorCOD = 0;
+    for (let k = 0; k < repayYears; k++) annFactorCOD += buyerDf[k];
+    const annualRepay = annFactorCOD > 0 ? fvSurchargedCOD / annFactorCOD : fvSurchargedCOD;
+    pvRepayCOD = annualRepay * annFactorCOD; // ≈ fvSurchargedCOD
+  }
 
   // Decom sinking fund — SOC-real → nominal at end-of-life (Tc + TL from SOC)
   const decomFundRateReal = 0.01;
@@ -400,7 +455,7 @@ function computeTurnkeyLcoe(
   const baseFuelCost = fuelCost * annualMwh;
   const baseOmCost = omCost;
 
-  // PV of sale tranches (buyer pays in years 1..nTranches, mid-year)
+  // PV of sale tranches (buyer pays net-of-RAB amount in years 1..nTranches)
   let pvSaleTranches = 0;
   for (let k = 0; k < nTranches; k++) pvSaleTranches += annualPayment * buyerDf[k];
 
@@ -418,19 +473,23 @@ function computeTurnkeyLcoe(
   if (pvEnergy <= 0) return zero;
 
   // Decompose sale payments using Economic Turnkey COD ratio.
-  // OCC = inflation-only book cost, Financing = WACC carry uplift.
+  // OCC = inflation-only book cost share, Financing = WACC carry uplift share.
   const pvOcc = pvSaleTranches * occRatioCOD;
-  const pvFinancing = pvSaleTranches * (1 - occRatioCOD);
+  const pvSaleFinancing = pvSaleTranches * (1 - occRatioCOD);
 
-  const totalPvCost = pvSaleTranches + pvOm + pvFuel + pvDecom;
+  // Total financing = sale carry uplift + RAB post-COD repayment
+  const pvFinancingTotal = pvSaleFinancing + pvRepayCOD;
+
+  // Total cost = sale tranches (net of RAB) + RAB repayment + operating costs
+  const totalPvCost = pvSaleTranches + pvRepayCOD + pvOm + pvFuel + pvDecom;
   return {
     totalLcoe: totalPvCost / pvEnergy,
     occLcoe: pvOcc / pvEnergy,
-    financingLcoe: pvFinancing / pvEnergy,
+    financingLcoe: pvFinancingTotal / pvEnergy,
     fuelLcoe: pvFuel / pvEnergy,
     omLcoe: pvOm / pvEnergy,
     decommissioningLcoe: pvDecom / pvEnergy,
-    surchargedIdcLcoe: 0,
+    surchargedIdcLcoe: 0, // buyer did not pay during construction
     developerSalePrice,
   };
 }
@@ -472,8 +531,8 @@ export const calculateLcoe = (
   // --- Turnkey mode ---
   if (turnkey) {
     return computeTurnkeyLcoe(
-      inputs, constr.fvEconomicCOD, constr.occRatioCOD,
-      waccNomBlend, declining,
+      inputs, constr.fvEconomicCOD, constr.fvSurchargedCOD,
+      constr.occRatioCOD, waccNomBlend, declining,
     );
   }
 
